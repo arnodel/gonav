@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 type PackageAnalyzer struct {
@@ -44,13 +46,17 @@ type FileInfo struct {
 
 type Symbol struct {
 	Name        string `json:"name"`
-	Type        string `json:"type"` // "function", "type", "var", "const", "method", "field"
+	Type        string `json:"type"` // "function", "type", "var", "const", "method", "field", "external"
 	File        string `json:"file"`
 	Line        int    `json:"line"`
 	Column      int    `json:"column"`
 	Package     string `json:"package"`
 	Signature   string `json:"signature,omitempty"`
 	Doc         string `json:"doc,omitempty"`
+	// Fields for external references
+	ImportPath  string `json:"importPath,omitempty"`  // Full import path like "github.com/arnodel/edit"
+	IsExternal  bool   `json:"isExternal,omitempty"`  // True if this is a cross-repository reference
+	Version     string `json:"version,omitempty"`     // Version from go.mod if available
 }
 
 type Reference struct {
@@ -67,11 +73,88 @@ type ImportInfo struct {
 	Line  int    `json:"line"`
 }
 
+type ModuleInfo struct {
+	ModulePath   string            `json:"modulePath"`   // e.g., "github.com/arnodel/golua"
+	Dependencies map[string]string `json:"dependencies"` // import path -> version
+	Replaces     map[string]string `json:"replaces"`     // old path -> new path
+}
+
 func New() *PackageAnalyzer {
 	return &PackageAnalyzer{
 		fset:     token.NewFileSet(),
 		packages: make(map[string]*PackageInfo),
 	}
+}
+
+// ParseModuleInfo parses the go.mod file in the given repository path
+func (a *PackageAnalyzer) ParseModuleInfo(repoPath string) (*ModuleInfo, error) {
+	modPath := filepath.Join(repoPath, "go.mod")
+	data, err := os.ReadFile(modPath)
+	if err != nil {
+		// If no go.mod file, return empty module info
+		if os.IsNotExist(err) {
+			return &ModuleInfo{
+				ModulePath:   "",
+				Dependencies: make(map[string]string),
+				Replaces:     make(map[string]string),
+			}, nil
+		}
+		return nil, fmt.Errorf("error reading go.mod: %w", err)
+	}
+
+	modFile, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing go.mod: %w", err)
+	}
+
+	info := &ModuleInfo{
+		Dependencies: make(map[string]string),
+		Replaces:     make(map[string]string),
+	}
+
+	// Extract module path
+	if modFile.Module != nil {
+		info.ModulePath = modFile.Module.Mod.Path
+	}
+
+	// Map dependency paths to versions
+	for _, req := range modFile.Require {
+		info.Dependencies[req.Mod.Path] = req.Mod.Version
+	}
+
+	// Handle replace directives (important for aliases!)
+	for _, rep := range modFile.Replace {
+		info.Replaces[rep.Old.Path] = rep.New.Path
+	}
+
+	fmt.Printf("Parsed module info: %s with %d dependencies and %d replaces\n", 
+		info.ModulePath, len(info.Dependencies), len(info.Replaces))
+
+	return info, nil
+}
+
+// IsExternalImport determines if an import path is external to the current module
+func (info *ModuleInfo) IsExternalImport(importPath string) bool {
+	if info.ModulePath == "" {
+		return true // If no module info, assume external
+	}
+	// Check if import is under current module path
+	return !strings.HasPrefix(importPath, info.ModulePath+"/") && importPath != info.ModulePath
+}
+
+// ResolveImport resolves an import path considering replace directives and returns version info
+func (info *ModuleInfo) ResolveImport(importPath string) (resolvedPath, version string) {
+	// Handle replace directives first
+	if replacement, exists := info.Replaces[importPath]; exists {
+		importPath = replacement
+	}
+
+	// Look up version
+	if version, exists := info.Dependencies[importPath]; exists {
+		return importPath, version
+	}
+
+	return importPath, "" // No version info available
 }
 
 // DiscoverPackages finds all Go packages in the repository without analyzing them
@@ -157,6 +240,18 @@ func (a *PackageAnalyzer) findFilesInPackage(packageDir string) ([]string, error
 func (a *PackageAnalyzer) AnalyzePackage(repoPath, packagePath string) (*PackageInfo, error) {
 	fmt.Printf("Analyzing package: %s in %s\n", packagePath, repoPath)
 
+	// Parse module information
+	moduleInfo, err := a.ParseModuleInfo(repoPath)
+	if err != nil {
+		fmt.Printf("Warning: failed to parse module info: %v\n", err)
+		// Continue without module info
+		moduleInfo = &ModuleInfo{
+			ModulePath:   "",
+			Dependencies: make(map[string]string),
+			Replaces:     make(map[string]string),
+		}
+	}
+
 	// Determine absolute path of package
 	var absolutePackagePath string
 	if packagePath == "" {
@@ -197,7 +292,7 @@ func (a *PackageAnalyzer) AnalyzePackage(repoPath, packagePath string) (*Package
 	}
 
 	// Analyze the package
-	packageInfo, err := a.analyzePackage(packageName, astPackage, repoPath)
+	packageInfo, err := a.analyzePackage(packageName, astPackage, repoPath, moduleInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -261,10 +356,22 @@ func (a *PackageAnalyzer) analyzeSinglePackage(pkgName, pkgPath, repoRoot string
 		return nil, fmt.Errorf("package %s not found in %s", pkgName, pkgPath)
 	}
 
-	return a.analyzePackage(pkgName, pkg, repoRoot)
+	// Parse module information for this call too
+	moduleInfo, err := a.ParseModuleInfo(repoRoot)
+	if err != nil {
+		fmt.Printf("Warning: failed to parse module info: %v\n", err)
+		// Continue without module info
+		moduleInfo = &ModuleInfo{
+			ModulePath:   "",
+			Dependencies: make(map[string]string),
+			Replaces:     make(map[string]string),
+		}
+	}
+
+	return a.analyzePackage(pkgName, pkg, repoRoot, moduleInfo)
 }
 
-func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, basePath string) (*PackageInfo, error) {
+func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, basePath string, moduleInfo *ModuleInfo) (*PackageInfo, error) {
 	fmt.Printf("Analyzing package: %s\n", pkgName)
 
 	// Prepare for type checking
@@ -314,7 +421,7 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 		relPath, _ := filepath.Rel(basePath, filePath)
 		relPath = filepath.ToSlash(relPath)
 
-		fileInfo, err := a.analyzeFile(file, relPath, info, typesPackage, basePath)
+		fileInfo, err := a.analyzeFile(file, relPath, info, typesPackage, basePath, moduleInfo)
 		if err != nil {
 			fmt.Printf("Failed to analyze file %s: %v\n", relPath, err)
 			continue
@@ -353,7 +460,7 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 	return packageInfo, nil
 }
 
-func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *types.Info, pkg *types.Package, basePath string) (*FileInfo, error) {
+func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *types.Info, pkg *types.Package, basePath string, moduleInfo *ModuleInfo) (*FileInfo, error) {
 	fmt.Printf("Analyzing file: %s\n", relPath)
 
 	fileInfo := &FileInfo{
@@ -490,6 +597,11 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 						}
 						
 						if importAlias == packageName {
+							// Determine if this is a cross-repository reference
+							importPath := importInfo.Path
+							resolvedPath, version := moduleInfo.ResolveImport(importPath)
+							isExternal := moduleInfo.IsExternalImport(importPath)
+							
 							// Create external reference
 							ref := &Reference{
 								Name:   node.Sel.Name,
@@ -497,17 +609,25 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 								Line:   pos.Line,
 								Column: pos.Column,
 								Target: &Symbol{
-									Name:    node.Sel.Name,
-									Type:    "external",
-									File:    "", // Will be resolved later
-									Line:    0,  // Will be resolved later
-									Column:  0,  // Will be resolved later
-									Package: importInfo.Path, // Store the import path for resolution
+									Name:       node.Sel.Name,
+									Type:       "external",
+									File:       "", // Will be resolved later
+									Line:       0,  // Will be resolved later
+									Column:     0,  // Will be resolved later
+									Package:    importPath, // Store the original import path
+									ImportPath: resolvedPath, // Store the resolved import path
+									IsExternal: isExternal,   // True if cross-repository
+									Version:    version,      // Version from go.mod if available
 								},
 							}
 							
-							fmt.Printf("Found external reference: %s.%s -> %s (lazy)\n", 
-								packageName, node.Sel.Name, importInfo.Path)
+							if isExternal {
+								fmt.Printf("Found cross-repository reference: %s.%s -> %s@%s (external)\n", 
+									packageName, node.Sel.Name, resolvedPath, version)
+							} else {
+								fmt.Printf("Found same-repository reference: %s.%s -> %s (internal)\n", 
+									packageName, node.Sel.Name, importPath)
+							}
 							
 							fileInfo.References = append(fileInfo.References, ref)
 							break
@@ -539,6 +659,11 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 						}
 						
 						if importAlias == packageName {
+							// Determine if this is a cross-repository reference
+							importPath := importInfo.Path
+							resolvedPath, version := moduleInfo.ResolveImport(importPath)
+							isExternal := moduleInfo.IsExternalImport(importPath)
+							
 							// Create external reference for the type name in composite literal
 							ref := &Reference{
 								Name:   selectorType.Sel.Name,
@@ -546,17 +671,25 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 								Line:   pos.Line,
 								Column: pos.Column,
 								Target: &Symbol{
-									Name:    selectorType.Sel.Name,
-									Type:    "external",
-									File:    "", // Will be resolved later
-									Line:    0,  // Will be resolved later
-									Column:  0,  // Will be resolved later
-									Package: importInfo.Path, // Store the import path for resolution
+									Name:       selectorType.Sel.Name,
+									Type:       "external",
+									File:       "", // Will be resolved later
+									Line:       0,  // Will be resolved later
+									Column:     0,  // Will be resolved later
+									Package:    importPath, // Store the original import path
+									ImportPath: resolvedPath, // Store the resolved import path
+									IsExternal: isExternal,   // True if cross-repository
+									Version:    version,      // Version from go.mod if available
 								},
 							}
 							
-							fmt.Printf("Found external reference in composite literal: %s.%s -> %s (lazy)\n", 
-								packageName, selectorType.Sel.Name, importInfo.Path)
+							if isExternal {
+								fmt.Printf("Found cross-repository reference in composite literal: %s.%s -> %s@%s (external)\n", 
+									packageName, selectorType.Sel.Name, resolvedPath, version)
+							} else {
+								fmt.Printf("Found same-repository reference in composite literal: %s.%s -> %s (internal)\n", 
+									packageName, selectorType.Sel.Name, importPath)
+							}
 							
 							fileInfo.References = append(fileInfo.References, ref)
 							break

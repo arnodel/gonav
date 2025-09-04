@@ -58,10 +58,23 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
         
         // Check if this is an external reference (lazy resolution)
         if (reference.target.type === 'external') {
-          console.log('External reference detected:', reference.target.package, symbol)
+          console.log('External reference detected:', reference.target)
           
-          // Extract package path from the import path
-          // e.g., "github.com/arnodel/golua/lib/packagelib" -> "lib/packagelib"
+          // Check if this is a cross-repository reference
+          if (reference.target.isExternal) {
+            // Cross-repository reference - show information and options
+            const modulePath = reference.target.importPath || reference.target.package
+            const version = reference.target.version || 'latest'
+            
+            console.log(`Cross-repository reference: ${symbol} in ${modulePath}@${version}`)
+            
+            // For now, show an alert with the information
+            // TODO: In the future, we could try to load the external repository or show a link
+            alert(`Cross-repository symbol: ${symbol}\n\nModule: ${modulePath}\nVersion: ${version}\n\nNavigation to external repositories is not yet supported.`)
+            return
+          }
+          
+          // Same-repository external reference - extract package path
           const importPath = reference.target.package
           let packagePath = importPath
           
@@ -81,7 +94,7 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
             }
           }
           
-          console.log('Resolved package path:', packagePath)
+          console.log('Resolved same-repo package path:', packagePath)
           onNavigateToSymbol(packagePath, symbol)
           return
         }
