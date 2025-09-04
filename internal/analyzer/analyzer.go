@@ -17,6 +17,13 @@ type PackageAnalyzer struct {
 	packages map[string]*PackageInfo
 }
 
+type PackageDiscovery struct {
+	Name         string   `json:"name"`
+	Path         string   `json:"path"`         // Relative path from repo root
+	AbsolutePath string   `json:"absolutePath"` // Full filesystem path
+	Files        []string `json:"files"`        // List of Go files in this package
+}
+
 type PackageInfo struct {
 	Name        string                 `json:"name"`
 	Path        string                 `json:"path"`
@@ -66,67 +73,139 @@ func New() *PackageAnalyzer {
 	}
 }
 
-func (a *PackageAnalyzer) AnalyzeRepository(repoPath string) (*PackageInfo, error) {
-	fmt.Printf("Analyzing repository at: %s\n", repoPath)
+// DiscoverPackages finds all Go packages in the repository without analyzing them
+func (a *PackageAnalyzer) DiscoverPackages(repoPath string) (map[string]*PackageDiscovery, error) {
+	fmt.Printf("Discovering packages in repository: %s\n", repoPath)
 
-	// Find all packages in the repository (including subdirectories)
-	allPackages, err := a.findAllPackages(repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find packages: %w", err)
-	}
+	packages := make(map[string]*PackageDiscovery)
 
-	fmt.Printf("Found %d packages total:\n", len(allPackages))
-	for pkgPath, pkgName := range allPackages {
-		fmt.Printf("  - Package '%s' at %s\n", pkgName, pkgPath)
-	}
-
-	// Analyze all packages and merge them into one comprehensive view
-	// For now, we'll create a "virtual" package that combines all symbols
-	combinedPackage := &PackageInfo{
-		Name:       "combined",
-		Path:       repoPath,
-		Files:      make(map[string]*FileInfo),
-		Symbols:    make(map[string]*Symbol),
-		References: make(map[string][]*Reference),
-		Imports:    make(map[string]string),
-	}
-
-	for pkgPath, pkgName := range allPackages {
-		fmt.Printf("Analyzing package '%s' at %s\n", pkgName, pkgPath)
-		
-		pkgInfo, err := a.analyzeSinglePackage(pkgName, pkgPath, repoPath)
+	err := filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			fmt.Printf("Failed to analyze package %s: %v\n", pkgName, err)
-			continue
+			return err
 		}
 
-		// Merge package into combined view
-		for filePath, fileInfo := range pkgInfo.Files {
-			combinedPackage.Files[filePath] = fileInfo
-		}
-
-		for symbolName, symbol := range pkgInfo.Symbols {
-			// Prefix symbol name with package if there are conflicts
-			key := symbolName
-			if _, exists := combinedPackage.Symbols[key]; exists && symbol.Package != combinedPackage.Symbols[key].Package {
-				key = fmt.Sprintf("%s.%s", symbol.Package, symbolName)
+		// Skip hidden directories, vendor, and common non-Go directories
+		if info.IsDir() {
+			name := info.Name()
+			if strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" || name == "testdata" {
+				return filepath.SkipDir
 			}
-			combinedPackage.Symbols[key] = symbol
 		}
 
-		for refName, refs := range pkgInfo.References {
-			if combinedPackage.References[refName] == nil {
-				combinedPackage.References[refName] = make([]*Reference, 0)
+		// Look for Go files to determine if this is a package directory
+		if strings.HasSuffix(info.Name(), ".go") && !strings.HasSuffix(info.Name(), "_test.go") {
+			dir := filepath.Dir(path)
+			
+			// Get relative path from repository root
+			relDir, err := filepath.Rel(repoPath, dir)
+			if err != nil {
+				return err
 			}
-			combinedPackage.References[refName] = append(combinedPackage.References[refName], refs...)
+			relDir = filepath.ToSlash(relDir)
+			if relDir == "." {
+				relDir = ""
+			}
+
+			if _, exists := packages[relDir]; !exists {
+				// Parse just one file to get the package name
+				file, err := parser.ParseFile(a.fset, path, nil, parser.PackageClauseOnly)
+				if err == nil && file.Name != nil {
+					// Find all Go files in this package
+					files, err := a.findFilesInPackage(dir)
+					if err != nil {
+						fmt.Printf("Failed to find files in package %s: %v\n", dir, err)
+						return nil
+					}
+
+					packages[relDir] = &PackageDiscovery{
+						Name:        file.Name.Name,
+						Path:        relDir,
+						AbsolutePath: dir,
+						Files:       files,
+					}
+					fmt.Printf("Discovered package '%s' at %s (%d files)\n", file.Name.Name, relDir, len(files))
+				}
+			}
+		}
+
+		return nil
+	})
+
+	fmt.Printf("Discovered %d packages\n", len(packages))
+	return packages, err
+}
+
+func (a *PackageAnalyzer) findFilesInPackage(packageDir string) ([]string, error) {
+	files := make([]string, 0)
+	
+	entries, err := os.ReadDir(packageDir)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") && !strings.HasSuffix(entry.Name(), "_test.go") {
+			files = append(files, entry.Name())
 		}
 	}
 
-	// Resolve cross-package references
-	a.resolveCrossPackageReferences(combinedPackage)
+	return files, nil
+}
 
-	fmt.Printf("Combined package has %d symbols across %d files\n", len(combinedPackage.Symbols), len(combinedPackage.Files))
-	return combinedPackage, nil
+// AnalyzePackage analyzes a specific package on-demand
+func (a *PackageAnalyzer) AnalyzePackage(repoPath, packagePath string) (*PackageInfo, error) {
+	fmt.Printf("Analyzing package: %s in %s\n", packagePath, repoPath)
+
+	// Determine absolute path of package
+	var absolutePackagePath string
+	if packagePath == "" {
+		absolutePackagePath = repoPath
+	} else {
+		absolutePackagePath = filepath.Join(repoPath, packagePath)
+	}
+
+	// Check if already analyzed and cached
+	cacheKey := fmt.Sprintf("%s::%s", repoPath, packagePath)
+	if pkg, exists := a.packages[cacheKey]; exists {
+		fmt.Printf("Returning cached analysis for package %s\n", packagePath)
+		return pkg, nil
+	}
+
+	// Parse all Go files in this specific package
+	fileFilter := func(info os.FileInfo) bool {
+		name := info.Name()
+		return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
+	}
+
+	pkgs, err := parser.ParseDir(a.fset, absolutePackagePath, fileFilter, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse package directory %s: %w", absolutePackagePath, err)
+	}
+
+	// Find the main package (there should only be one per directory)
+	var astPackage *ast.Package
+	var packageName string
+	for name, pkg := range pkgs {
+		astPackage = pkg
+		packageName = name
+		break // Take the first (and usually only) package
+	}
+
+	if astPackage == nil {
+		return nil, fmt.Errorf("no package found in %s", absolutePackagePath)
+	}
+
+	// Analyze the package
+	packageInfo, err := a.analyzePackage(packageName, astPackage, repoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the analyzed package
+	a.packages[cacheKey] = packageInfo
+	fmt.Printf("Successfully analyzed package '%s' with %d symbols\n", packageName, len(packageInfo.Symbols))
+
+	return packageInfo, nil
 }
 
 func (a *PackageAnalyzer) findAllPackages(rootPath string) (map[string]string, error) {

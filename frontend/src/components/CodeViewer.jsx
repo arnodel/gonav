@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react'
 
-function CodeViewer({ file, content, repository, onSymbolClick, highlightLine = null }) {
+function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymbol, highlightLine = null }) {
   const codeRef = useRef(null)
 
   // Scroll to highlighted line when it changes
@@ -51,6 +51,15 @@ function CodeViewer({ file, content, repository, onSymbolClick, highlightLine = 
       const reference = content.references.find(ref => ref.name === symbol)
       if (reference && reference.target) {
         console.log('Found reference with target:', reference.target)
+        
+        // Check if target is in a different package (cross-package navigation)
+        if (reference.target.package && onNavigateToSymbol) {
+          console.log('Cross-package navigation to:', reference.target.package, symbol)
+          onNavigateToSymbol(reference.target.package, symbol)
+          return
+        }
+        
+        // Same package navigation
         onSymbolClick(reference.target.file, reference.target.line)
         return
       }

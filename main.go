@@ -19,17 +19,17 @@ import (
 )
 
 type Server struct {
-	repoManager *repo.Manager
-	analyzer    *analyzer.PackageAnalyzer
-	// Cache for analyzed packages
-	packageCache map[string]*analyzer.PackageInfo
+	repoManager   *repo.Manager
+	analyzer      *analyzer.PackageAnalyzer
+	// Cache for package discoveries per repository
+	discoveryCache map[string]map[string]*analyzer.PackageDiscovery
 }
 
 func NewServer() *Server {
 	return &Server{
-		repoManager:  repo.NewManager(),
-		analyzer:     analyzer.New(),
-		packageCache: make(map[string]*analyzer.PackageInfo),
+		repoManager:    repo.NewManager(),
+		analyzer:       analyzer.New(),
+		discoveryCache: make(map[string]map[string]*analyzer.PackageDiscovery),
 	}
 }
 
@@ -66,20 +66,98 @@ func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Analyze the package for cross-references
+	// Discover packages in the repository (fast operation)
 	repoPath := s.repoManager.GetRepositoryPath(moduleAtVersion)
 	if repoPath != "" {
-		packageInfo, err := s.analyzer.AnalyzeRepository(repoPath)
+		packageDiscoveries, err := s.analyzer.DiscoverPackages(repoPath)
 		if err != nil {
-			fmt.Printf("Failed to analyze repository (continuing anyway): %v\n", err)
+			fmt.Printf("Failed to discover packages (continuing anyway): %v\n", err)
 		} else {
-			s.packageCache[moduleAtVersion] = packageInfo
-			fmt.Printf("Successfully analyzed package with %d symbols\n", len(packageInfo.Symbols))
+			s.discoveryCache[moduleAtVersion] = packageDiscoveries
+			fmt.Printf("Successfully discovered %d packages\n", len(packageDiscoveries))
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(repoInfo)
+}
+
+func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
+	// Enable CORS
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == http.MethodOptions {
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract module@version and package path from URL
+	// URL format: /api/package/{module@version}/{package_path}
+	path := strings.TrimPrefix(r.URL.Path, "/api/package/")
+	
+	// First, let's URL decode the entire path
+	decodedPath, err := url.QueryUnescape(path)
+	if err != nil {
+		http.Error(w, "Invalid URL encoding", http.StatusBadRequest)
+		return
+	}
+	
+	// Now we have something like: github.com/owner/repo@version/package/path
+	// We need to find where the module@version ends and the package path begins
+	// Look for the @ symbol to find the version, then find the next / after that
+	
+	atIndex := strings.Index(decodedPath, "@")
+	if atIndex == -1 {
+		http.Error(w, "Invalid module@version format", http.StatusBadRequest)
+		return
+	}
+	
+	// Find the first / after the @version part
+	versionStart := atIndex + 1
+	slashAfterVersion := strings.Index(decodedPath[versionStart:], "/")
+	
+	var moduleAtVersion string
+	var packagePath string
+	
+	if slashAfterVersion == -1 {
+		// No package path, just module@version
+		moduleAtVersion = decodedPath
+		packagePath = ""
+	} else {
+		moduleAtVersionEnd := versionStart + slashAfterVersion
+		moduleAtVersion = decodedPath[:moduleAtVersionEnd]
+		packagePath = decodedPath[moduleAtVersionEnd+1:]
+	}
+
+	fmt.Printf("Analyzing package: '%s' in repository: '%s'\n", packagePath, moduleAtVersion)
+
+	// Get repository path
+	repoPath := s.repoManager.GetRepositoryPath(moduleAtVersion)
+	if repoPath == "" {
+		fmt.Printf("Repository not found for: '%s'\n", moduleAtVersion)
+		http.Error(w, "Repository not loaded", http.StatusNotFound)
+		return
+	}
+
+	// Analyze the specific package
+	packageInfo, err := s.analyzer.AnalyzePackage(repoPath, packagePath)
+	if err != nil {
+		fmt.Printf("Failed to analyze package: %v\n", err)
+		http.Error(w, fmt.Sprintf("Failed to analyze package: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("Successfully analyzed package with %d symbols and %d files\n", 
+		len(packageInfo.Symbols), len(packageInfo.Files))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(packageInfo)
 }
 
 func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
@@ -149,51 +227,58 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	fullPath := filepath.Join(repoPath, filePath)
 	fmt.Printf("Attempting to parse file at: '%s'\n", fullPath)
 	
-	// Try to get analyzed file info first
-	if packageInfo, exists := s.packageCache[moduleAtVersion]; exists {
-		if analyzerFileInfo, exists := packageInfo.Files[filePath]; exists {
-			fmt.Printf("Returning analyzed file info with %d symbols and %d references\n", 
-				len(analyzerFileInfo.Symbols), len(analyzerFileInfo.References))
-			
-			// Convert analyzer format to frontend-expected format
-			frontendFileInfo := map[string]interface{}{
-				"source": analyzerFileInfo.Source,
-				"symbols": make(map[string]interface{}),
-				"references": analyzerFileInfo.References,
-			}
-			
-			// Convert symbols to the expected format
-			for _, symbol := range analyzerFileInfo.Symbols {
-				frontendFileInfo["symbols"].(map[string]interface{})[symbol.Name] = map[string]interface{}{
-					"name": symbol.Name,
-					"type": symbol.Type,
-					"file": symbol.File,
-					"line": symbol.Line,
-					"package": symbol.Package,
-				}
-			}
-			
-			// Also include cross-package symbols that might be referenced in this file
-			for _, ref := range analyzerFileInfo.References {
-				if ref.Target != nil {
-					// Add the target symbol to the symbols map so it can be navigated to
-					frontendFileInfo["symbols"].(map[string]interface{})[ref.Target.Name] = map[string]interface{}{
-						"name": ref.Target.Name,
-						"type": ref.Target.Type,
-						"file": ref.Target.File,
-						"line": ref.Target.Line,
-						"package": ref.Target.Package,
-					}
-				}
-			}
-			
-			fmt.Printf("Converted to frontend format with %d symbols\n", 
-				len(frontendFileInfo["symbols"].(map[string]interface{})))
-			
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(frontendFileInfo)
-			return
+	// Determine which package this file belongs to
+	packagePath := filepath.Dir(filePath)
+	if packagePath == "." {
+		packagePath = ""
+	}
+
+	// Analyze the package containing this file
+	packageInfo, err := s.analyzer.AnalyzePackage(repoPath, packagePath)
+	if err != nil {
+		fmt.Printf("Failed to analyze package for file %s: %v\n", filePath, err)
+	} else if analyzerFileInfo, exists := packageInfo.Files[filePath]; exists {
+		fmt.Printf("Returning analyzed file info with %d symbols and %d references\n", 
+			len(analyzerFileInfo.Symbols), len(analyzerFileInfo.References))
+		
+		// Convert analyzer format to frontend-expected format
+		frontendFileInfo := map[string]interface{}{
+			"source": analyzerFileInfo.Source,
+			"symbols": make(map[string]interface{}),
+			"references": analyzerFileInfo.References,
 		}
+		
+		// Convert symbols to the expected format
+		for _, symbol := range analyzerFileInfo.Symbols {
+			frontendFileInfo["symbols"].(map[string]interface{})[symbol.Name] = map[string]interface{}{
+				"name": symbol.Name,
+				"type": symbol.Type,
+				"file": symbol.File,
+				"line": symbol.Line,
+				"package": symbol.Package,
+			}
+		}
+		
+		// Also include cross-package symbols that might be referenced in this file
+		for _, ref := range analyzerFileInfo.References {
+			if ref.Target != nil {
+				// Add the target symbol to the symbols map so it can be navigated to
+				frontendFileInfo["symbols"].(map[string]interface{})[ref.Target.Name] = map[string]interface{}{
+					"name": ref.Target.Name,
+					"type": ref.Target.Type,
+					"file": ref.Target.File,
+					"line": ref.Target.Line,
+					"package": ref.Target.Package,
+				}
+			}
+		}
+		
+		fmt.Printf("Converted to frontend format with %d symbols\n", 
+			len(frontendFileInfo["symbols"].(map[string]interface{})))
+		
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(frontendFileInfo)
+		return
 	}
 
 	// Fallback: read file manually if not in analysis
@@ -236,6 +321,7 @@ func (s *Server) setupRoutes() *http.ServeMux {
 
 	// API routes
 	mux.HandleFunc("/api/repo/", s.handleRepo)
+	mux.HandleFunc("/api/package/", s.handlePackage)
 	mux.HandleFunc("/api/file/", s.handleFile)
 
 	// Serve static files for development
