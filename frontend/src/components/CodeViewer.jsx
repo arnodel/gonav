@@ -29,21 +29,25 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
   const handleSymbolClick = async (symbol) => {
     console.log('Symbol clicked:', symbol)
     
-    // First check if it's a defined symbol in this file
+    // First check if it's a defined symbol in this file (but skip external references)
     if (content.symbols && content.symbols[symbol]) {
       const symbolInfo = content.symbols[symbol]
       console.log('Found symbol definition:', symbolInfo)
       
-      if (symbolInfo.file === file) {
+      // Skip external references - they should be handled by the reference logic below
+      if (symbolInfo.type === 'external') {
+        console.log('Skipping external symbol, will handle via references')
+      } else if (symbolInfo.file === file) {
         // Same file - scroll to line and highlight
         console.log(`Navigate to line ${symbolInfo.line} in current file`)
         onSymbolClick(symbolInfo.file, symbolInfo.line)
+        return
       } else {
         // Different file - load it with line to highlight
         console.log('Navigating to different file:', symbolInfo.file, 'line:', symbolInfo.line)
         onSymbolClick(symbolInfo.file, symbolInfo.line)
+        return
       }
-      return
     }
     
     // Check if it's a reference that points to a definition elsewhere
@@ -52,14 +56,51 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
       if (reference && reference.target) {
         console.log('Found reference with target:', reference.target)
         
-        // Check if target is in a different package (cross-package navigation)
-        if (reference.target.package && onNavigateToSymbol) {
-          console.log('Cross-package navigation to:', reference.target.package, symbol)
-          onNavigateToSymbol(reference.target.package, symbol)
+        // Check if this is an external reference (lazy resolution)
+        if (reference.target.type === 'external') {
+          console.log('External reference detected:', reference.target.package, symbol)
+          
+          // Extract package path from the import path
+          // e.g., "github.com/arnodel/golua/lib/packagelib" -> "lib/packagelib"
+          const importPath = reference.target.package
+          let packagePath = importPath
+          
+          // If it's from the same module, extract the relative path
+          if (importPath.includes('/')) {
+            const parts = importPath.split('/')
+            // Look for common module patterns and extract the package path
+            // For github.com/owner/repo/path/to/package -> path/to/package
+            const moduleStart = parts.findIndex((part, index) => 
+              index >= 2 && !part.includes('.') // Skip domain and owner parts
+            )
+            if (moduleStart > 0 && moduleStart < parts.length - 1) {
+              packagePath = parts.slice(moduleStart + 1).join('/')
+            } else {
+              // Fallback: use the last part as package name
+              packagePath = parts[parts.length - 1]
+            }
+          }
+          
+          console.log('Resolved package path:', packagePath)
+          onNavigateToSymbol(packagePath, symbol)
           return
         }
         
-        // Same package navigation
+        // Determine current package from the file path
+        const currentPackagePath = file.includes('/') ? file.substring(0, file.lastIndexOf('/')) : ''
+        
+        // Check if target is in a different package (cross-package navigation)
+        const targetFile = reference.target.file
+        const targetPackagePath = targetFile.includes('/') ? targetFile.substring(0, targetFile.lastIndexOf('/')) : ''
+        
+        // Cross-package navigation if target is in a different package within the same repo
+        if (targetPackagePath !== currentPackagePath && targetPackagePath && onNavigateToSymbol) {
+          console.log('Cross-package navigation to:', targetPackagePath, symbol)
+          onNavigateToSymbol(targetPackagePath, symbol)
+          return
+        }
+        
+        // Same package navigation (including same file)
         onSymbolClick(reference.target.file, reference.target.line)
         return
       }
@@ -107,11 +148,21 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
           const endPos = startPos + ref.length
           
           // Verify the text at this position matches the reference name
+          // Use the original line, not the processed line, for position checking
           const textAtPosition = line.substring(startPos, endPos)
           if (textAtPosition === ref.name) {
-            const before = line.substring(0, startPos)
-            const after = line.substring(endPos)
-            processedLine = before + `<span class="symbol" data-symbol="${ref.name}">${ref.name}</span>` + after
+            // For string replacement, we need to work backwards since we sorted in reverse order
+            // Find the current position in the processedLine that corresponds to the original position
+            let currentStartPos = startPos
+            let currentEndPos = endPos
+            
+            // Since we're processing from right to left, the position should still be valid
+            const currentText = processedLine.substring(currentStartPos, currentEndPos)
+            if (currentText === ref.name) {
+              const before = processedLine.substring(0, currentStartPos)
+              const after = processedLine.substring(currentEndPos)
+              processedLine = before + `<span class="symbol" data-symbol="${ref.name}">${ref.name}</span>` + after
+            }
           }
         })
       }

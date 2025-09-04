@@ -25,12 +25,13 @@ type PackageDiscovery struct {
 }
 
 type PackageInfo struct {
-	Name        string                 `json:"name"`
-	Path        string                 `json:"path"`
-	Files       map[string]*FileInfo   `json:"files"`
-	Symbols     map[string]*Symbol     `json:"symbols"`     // All symbols in this package
-	References  map[string][]*Reference `json:"references"`  // Symbol -> list of references
-	Imports     map[string]string      `json:"imports"`     // alias -> package path
+	Name            string                 `json:"name"`
+	Path            string                 `json:"path"`
+	Files           map[string]*FileInfo   `json:"files"`
+	Symbols         map[string]*Symbol     `json:"symbols"`         // All symbols in this package
+	ExportedSymbols map[string]*Symbol     `json:"exportedSymbols"` // Only exported (public) symbols
+	References      map[string][]*Reference `json:"references"`      // Symbol -> list of references
+	Imports         map[string]string      `json:"imports"`         // alias -> package path
 }
 
 type FileInfo struct {
@@ -298,12 +299,13 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 
 	// Create package info
 	packageInfo := &PackageInfo{
-		Name:       pkgName,
-		Path:       basePath,
-		Files:      make(map[string]*FileInfo),
-		Symbols:    make(map[string]*Symbol),
-		References: make(map[string][]*Reference),
-		Imports:    make(map[string]string),
+		Name:            pkgName,
+		Path:            basePath,
+		Files:           make(map[string]*FileInfo),
+		Symbols:         make(map[string]*Symbol),
+		ExportedSymbols: make(map[string]*Symbol),
+		References:      make(map[string][]*Reference),
+		Imports:         make(map[string]string),
 	}
 
 	// Analyze each file
@@ -312,7 +314,7 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 		relPath, _ := filepath.Rel(basePath, filePath)
 		relPath = filepath.ToSlash(relPath)
 
-		fileInfo, err := a.analyzeFile(file, relPath, info, typesPackage)
+		fileInfo, err := a.analyzeFile(file, relPath, info, typesPackage, basePath)
 		if err != nil {
 			fmt.Printf("Failed to analyze file %s: %v\n", relPath, err)
 			continue
@@ -323,7 +325,14 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 		// Collect symbols at package level
 		for _, symbol := range fileInfo.Symbols {
 			packageInfo.Symbols[symbol.Name] = symbol
-			fmt.Printf("Added symbol: %s (%s) from %s:%d\n", symbol.Name, symbol.Type, symbol.File, symbol.Line)
+			
+			// Check if symbol is exported (starts with capital letter)
+			if len(symbol.Name) > 0 && symbol.Name[0] >= 'A' && symbol.Name[0] <= 'Z' {
+				packageInfo.ExportedSymbols[symbol.Name] = symbol
+				fmt.Printf("Added exported symbol: %s (%s) from %s:%d\n", symbol.Name, symbol.Type, symbol.File, symbol.Line)
+			} else {
+				fmt.Printf("Added symbol: %s (%s) from %s:%d\n", symbol.Name, symbol.Type, symbol.File, symbol.Line)
+			}
 		}
 
 		// Collect references at package level
@@ -344,7 +353,7 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 	return packageInfo, nil
 }
 
-func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *types.Info, pkg *types.Package) (*FileInfo, error) {
+func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *types.Info, pkg *types.Package, basePath string) (*FileInfo, error) {
 	fmt.Printf("Analyzing file: %s\n", relPath)
 
 	fileInfo := &FileInfo{
@@ -403,8 +412,157 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 					Line:   pos.Line,
 					Column: pos.Column,
 				}
+				
+				// Try to create target symbol information from the type checker
+				if targetSymbol := a.createSymbolFromObjectWithBase(obj, "", a.fset.Position(obj.Pos()), basePath); targetSymbol != nil {
+					ref.Target = targetSymbol
+					fmt.Printf("Found reference with target: %s -> %s:%d (%s)\n", 
+						node.Name, targetSymbol.File, targetSymbol.Line, targetSymbol.Package)
+				} else {
+					fmt.Printf("Found reference without target: %s at %s:%d\n", node.Name, relPath, pos.Line)
+				}
+				
 				fileInfo.References = append(fileInfo.References, ref)
-				fmt.Printf("Found reference: %s at %s:%d\n", node.Name, relPath, pos.Line)
+			}
+
+		case *ast.SelectorExpr:
+			// Handle selector expressions like pkg.Symbol
+			pos := a.fset.Position(node.Sel.Pos())
+			
+			// First try to resolve using type checker (for internal references)
+			if obj := info.Uses[node.Sel]; obj != nil {
+				ref := &Reference{
+					Name:   node.Sel.Name,
+					File:   relPath,
+					Line:   pos.Line,
+					Column: pos.Column,
+				}
+				
+				// Try to create target symbol information from the type checker
+				if targetSymbol := a.createSymbolFromObjectWithBase(obj, "", a.fset.Position(obj.Pos()), basePath); targetSymbol != nil {
+					ref.Target = targetSymbol
+					fmt.Printf("Found selector reference with target: %s -> %s:%d (%s)\n", 
+						node.Sel.Name, targetSymbol.File, targetSymbol.Line, targetSymbol.Package)
+				} else {
+					fmt.Printf("Found selector reference without target: %s at %s:%d\n", node.Sel.Name, relPath, pos.Line)
+				}
+				
+				fileInfo.References = append(fileInfo.References, ref)
+			} else if typeAndValue, exists := info.Types[node]; exists && typeAndValue.Type != nil {
+				// Check if it's a type reference in Types
+				if namedType, ok := typeAndValue.Type.(*types.Named); ok {
+					obj := namedType.Obj()
+					if obj != nil {
+						ref := &Reference{
+							Name:   node.Sel.Name,
+							File:   relPath,
+							Line:   pos.Line,
+							Column: pos.Column,
+						}
+						
+						// Try to create target symbol information from the type
+						if targetSymbol := a.createSymbolFromObjectWithBase(obj, "", a.fset.Position(obj.Pos()), basePath); targetSymbol != nil {
+							ref.Target = targetSymbol
+							fmt.Printf("Found selector type reference with target: %s -> %s:%d (%s)\n", 
+								node.Sel.Name, targetSymbol.File, targetSymbol.Line, targetSymbol.Package)
+						} else {
+							fmt.Printf("Found selector type reference without target: %s at %s:%d\n", node.Sel.Name, relPath, pos.Line)
+						}
+						
+						fileInfo.References = append(fileInfo.References, ref)
+					}
+				}
+			} else {
+				// Fallback: Create lazy external reference for package.Symbol patterns
+				// Check if the left side (X) is an identifier that corresponds to an import
+				if ident, ok := node.X.(*ast.Ident); ok {
+					packageName := ident.Name
+					
+					// Check if this package name corresponds to an import
+					for _, importInfo := range fileInfo.Imports {
+						var importAlias string
+						if importInfo.Alias != "" {
+							importAlias = importInfo.Alias
+						} else {
+							// Extract the last part of the import path as default alias
+							parts := strings.Split(importInfo.Path, "/")
+							importAlias = parts[len(parts)-1]
+						}
+						
+						if importAlias == packageName {
+							// Create external reference
+							ref := &Reference{
+								Name:   node.Sel.Name,
+								File:   relPath,
+								Line:   pos.Line,
+								Column: pos.Column,
+								Target: &Symbol{
+									Name:    node.Sel.Name,
+									Type:    "external",
+									File:    "", // Will be resolved later
+									Line:    0,  // Will be resolved later
+									Column:  0,  // Will be resolved later
+									Package: importInfo.Path, // Store the import path for resolution
+								},
+							}
+							
+							fmt.Printf("Found external reference: %s.%s -> %s (lazy)\n", 
+								packageName, node.Sel.Name, importInfo.Path)
+							
+							fileInfo.References = append(fileInfo.References, ref)
+							break
+						}
+					}
+				}
+			}
+		
+		case *ast.CompositeLit:
+			// Handle composite literals like packagelib.Loader{...}
+			// The Type field contains the type being instantiated
+			if selectorType, ok := node.Type.(*ast.SelectorExpr); ok {
+				// This is a composite literal with a selector type (pkg.Type{})
+				pos := a.fset.Position(selectorType.Sel.Pos())
+				
+				// Check if the left side (X) is an identifier that corresponds to an import
+				if ident, ok := selectorType.X.(*ast.Ident); ok {
+					packageName := ident.Name
+					
+					// Check if this package name corresponds to an import
+					for _, importInfo := range fileInfo.Imports {
+						var importAlias string
+						if importInfo.Alias != "" {
+							importAlias = importInfo.Alias
+						} else {
+							// Extract the last part of the import path as default alias
+							parts := strings.Split(importInfo.Path, "/")
+							importAlias = parts[len(parts)-1]
+						}
+						
+						if importAlias == packageName {
+							// Create external reference for the type name in composite literal
+							ref := &Reference{
+								Name:   selectorType.Sel.Name,
+								File:   relPath,
+								Line:   pos.Line,
+								Column: pos.Column,
+								Target: &Symbol{
+									Name:    selectorType.Sel.Name,
+									Type:    "external",
+									File:    "", // Will be resolved later
+									Line:    0,  // Will be resolved later
+									Column:  0,  // Will be resolved later
+									Package: importInfo.Path, // Store the import path for resolution
+								},
+							}
+							
+							fmt.Printf("Found external reference in composite literal: %s.%s -> %s (lazy)\n", 
+								packageName, selectorType.Sel.Name, importInfo.Path)
+							
+							fileInfo.References = append(fileInfo.References, ref)
+							break
+						}
+					}
+				}
 			}
 		}
 
@@ -414,17 +572,91 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 	return fileInfo, nil
 }
 
-func (a *PackageAnalyzer) createSymbolFromObject(obj types.Object, file string, pos token.Position) *Symbol {
+func (a *PackageAnalyzer) createSymbolFromObjectWithBase(obj types.Object, file string, pos token.Position, basePath string) *Symbol {
 	if obj == nil {
 		return nil
+	}
+	
+	// If file is empty, we need to determine it from the object's position
+	targetFile := file
+	if targetFile == "" && pos.IsValid() {
+		absPath := pos.Filename
+		if absPath != "" {
+			// Convert absolute path to relative path from basePath
+			if relPath, err := filepath.Rel(basePath, absPath); err == nil {
+				targetFile = filepath.ToSlash(relPath)
+			} else {
+				// If we can't make it relative, use the absolute path as fallback
+				targetFile = absPath
+			}
+		}
+	}
+	
+	// Handle case where we might not have a valid package (e.g., built-in types)
+	var packageName string
+	if obj.Pkg() != nil {
+		packageName = obj.Pkg().Name()
+	} else {
+		packageName = "builtin"
 	}
 
 	symbol := &Symbol{
 		Name:    obj.Name(),
-		File:    file,
+		File:    targetFile,
 		Line:    pos.Line,
 		Column:  pos.Column,
-		Package: obj.Pkg().Name(),
+		Package: packageName,
+	}
+
+	switch o := obj.(type) {
+	case *types.Func:
+		symbol.Type = "function"
+		symbol.Signature = o.Type().String()
+	case *types.TypeName:
+		symbol.Type = "type"
+		symbol.Signature = o.Type().String()
+	case *types.Var:
+		if o.IsField() {
+			symbol.Type = "field"
+		} else {
+			symbol.Type = "var"
+		}
+		symbol.Signature = o.Type().String()
+	case *types.Const:
+		symbol.Type = "const"
+		symbol.Signature = o.Type().String()
+	default:
+		symbol.Type = "unknown"
+	}
+
+	return symbol
+}
+
+func (a *PackageAnalyzer) createSymbolFromObject(obj types.Object, file string, pos token.Position) *Symbol {
+	if obj == nil {
+		return nil
+	}
+	
+	// If file is empty, we need to determine it from the object's position
+	targetFile := file
+	if targetFile == "" && pos.IsValid() {
+		targetFile = pos.Filename
+	}
+	
+	// Handle case where we might not have a valid package (e.g., built-in types)
+	var packageName string
+	if obj.Pkg() != nil {
+		packageName = obj.Pkg().Name()
+	} else {
+		packageName = "builtin"
+	}
+
+	symbol := &Symbol{
+		Name:    obj.Name(),
+		File:    targetFile,
+		Line:    pos.Line,
+		Column:  pos.Column,
+		Package: packageName,
 	}
 
 	switch o := obj.(type) {

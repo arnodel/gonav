@@ -162,16 +162,32 @@ function App() {
 
     console.log(`Navigating to symbol: ${symbolName} in package: ${packagePath}`)
 
+    // Check if target package is in the same repository
+    const currentModule = repository?.moduleAtVersion
+    const isSameRepo = !moduleAtVersion || moduleAtVersion === currentModule
+    
+    if (!isSameRepo) {
+      // External repository - show message for now
+      alert(`Cross-repository navigation to ${moduleAtVersion}/${packagePath}.${symbolName} is not yet supported`)
+      return
+    }
+
     try {
-      // Analyze the target package
+      // Same repository - analyze the target package
       const packageInfo = await analyzePackage(targetModule, packagePath)
       if (!packageInfo) {
         alert(`Failed to analyze package: ${packagePath}`)
         return
       }
 
-      // Find the symbol in the package
-      const symbol = packageInfo.symbols?.[symbolName]
+      // First try to find the symbol in exported symbols (for cross-package references)
+      let symbol = packageInfo.exportedSymbols?.[symbolName]
+      
+      // If not found in exported symbols, try all symbols (for internal navigation)
+      if (!symbol) {
+        symbol = packageInfo.symbols?.[symbolName]
+      }
+      
       if (symbol) {
         console.log(`Found symbol: ${symbolName} at ${symbol.file}:${symbol.line}`)
         
@@ -179,6 +195,8 @@ function App() {
         await handleFileSelect(symbol.file, symbol.line)
       } else {
         console.log(`Symbol ${symbolName} not found in package ${packagePath}`)
+        const availableExported = Object.keys(packageInfo.exportedSymbols || {})
+        console.log(`Available exported symbols in ${packagePath}:`, availableExported)
         alert(`Symbol '${symbolName}' not found in package '${packagePath}'`)
       }
     } catch (error) {
