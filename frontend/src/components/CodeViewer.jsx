@@ -71,19 +71,50 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
   }
 
   const renderCodeWithSymbols = (code) => {
-    if (!content.symbols) return code
+    if (!content.symbols && !content.references) return code
 
     const lines = code.split('\n')
+    
+    // Create a map of line -> column positions for actual references
+    const referenceMap = new Map()
+    if (content.references) {
+      content.references.forEach(ref => {
+        const key = `${ref.line}`
+        if (!referenceMap.has(key)) {
+          referenceMap.set(key, [])
+        }
+        referenceMap.get(key).push({
+          column: ref.column,
+          name: ref.name,
+          length: ref.name.length
+        })
+      })
+    }
     
     return lines.map((line, index) => {
       const lineNumber = index + 1
       let processedLine = line
       
-      // Make symbols clickable
-      Object.keys(content.symbols).forEach(symbol => {
-        const regex = new RegExp(`\\b${symbol}\\b`, 'g')
-        processedLine = processedLine.replace(regex, `<span class="symbol" data-symbol="${symbol}">${symbol}</span>`)
-      })
+      // Make only actual references clickable (not all symbol occurrences)
+      const lineRefs = referenceMap.get(String(lineNumber))
+      if (lineRefs) {
+        // Sort by column position in reverse order to avoid position shifts during replacement
+        const sortedRefs = [...lineRefs].sort((a, b) => b.column - a.column)
+        
+        sortedRefs.forEach(ref => {
+          // Column positions are typically 1-based, convert to 0-based for JavaScript
+          const startPos = ref.column - 1
+          const endPos = startPos + ref.length
+          
+          // Verify the text at this position matches the reference name
+          const textAtPosition = line.substring(startPos, endPos)
+          if (textAtPosition === ref.name) {
+            const before = line.substring(0, startPos)
+            const after = line.substring(endPos)
+            processedLine = before + `<span class="symbol" data-symbol="${ref.name}">${ref.name}</span>` + after
+          }
+        })
+      }
       
       const isHighlighted = highlightLine === lineNumber
       const lineClass = isHighlighted ? 'code-line highlighted' : 'code-line'
