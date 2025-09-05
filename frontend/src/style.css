@@ -92,10 +92,48 @@ body {
   border-bottom: 1px solid #e0e0e0;
 }
 
-.file-tree-header h3 {
+.file-tree-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 0.5rem;
+}
+
+.file-tree-header h3 {
+  margin: 0;
   color: #333;
   font-size: 1rem;
+}
+
+.file-tree-controls {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.tree-control-button {
+  padding: 0.25rem 0.4rem;
+  background: none;
+  color: #666;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-family: 'Monaco', 'Menlo', monospace;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+}
+
+.tree-control-button:hover {
+  background-color: #f8f9fa;
+  border-color: #ddd;
+  color: #333;
+}
+
+.tree-control-button:active {
+  background-color: #dee2e6;
 }
 
 .file-filter {

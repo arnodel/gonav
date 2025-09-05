@@ -47,11 +47,13 @@ function FileTree({ repository, onFileSelect, selectedFile }) {
     return tree
   }, [repository.files])
 
-  // Filter files based on search term
+  // Filter files based on search term and auto-expand directories with matches
   const filteredTree = useMemo(() => {
     if (!filter.trim()) return directoryTree
     
-    const filterTree = (node) => {
+    const directoriesWithMatches = new Set()
+    
+    const filterTree = (node, currentPath = '') => {
       const filtered = {}
       
       Object.entries(node).forEach(([name, item]) => {
@@ -60,10 +62,20 @@ function FileTree({ repository, onFileSelect, selectedFile }) {
           if (name.toLowerCase().includes(filter.toLowerCase()) || 
               item.path.toLowerCase().includes(filter.toLowerCase())) {
             filtered[name] = item
+            
+            // Mark all parent directories as needing expansion
+            const pathParts = currentPath.split('/').filter(Boolean)
+            let parentPath = ''
+            pathParts.forEach(part => {
+              parentPath = parentPath ? `${parentPath}/${part}` : part
+              directoriesWithMatches.add(parentPath)
+            })
           }
         } else if (item.type === 'directory') {
+          const fullPath = currentPath ? `${currentPath}/${name}` : name
+          
           // Recursively filter directory contents
-          const filteredChildren = filterTree(item.children)
+          const filteredChildren = filterTree(item.children, fullPath)
           if (Object.keys(filteredChildren).length > 0 || 
               name.toLowerCase().includes(filter.toLowerCase())) {
             filtered[name] = {
@@ -77,7 +89,18 @@ function FileTree({ repository, onFileSelect, selectedFile }) {
       return filtered
     }
     
-    return filterTree(directoryTree)
+    const result = filterTree(directoryTree)
+    
+    // Auto-expand directories that contain matches
+    if (directoriesWithMatches.size > 0) {
+      setExpandedDirectories(prev => {
+        const newExpanded = new Set(prev)
+        directoriesWithMatches.forEach(path => newExpanded.add(path))
+        return newExpanded
+      })
+    }
+    
+    return result
   }, [directoryTree, filter])
 
   const toggleDirectory = (dirPath) => {
@@ -90,6 +113,27 @@ function FileTree({ repository, onFileSelect, selectedFile }) {
       }
       return newExpanded
     })
+  }
+
+  const expandAll = () => {
+    const allDirectories = new Set(['']) // Start with root
+    
+    const collectDirectories = (node, parentPath = '') => {
+      Object.entries(node).forEach(([name, item]) => {
+        if (item.type === 'directory') {
+          const fullPath = parentPath ? `${parentPath}/${name}` : name
+          allDirectories.add(fullPath)
+          collectDirectories(item.children, fullPath)
+        }
+      })
+    }
+    
+    collectDirectories(filteredTree)
+    setExpandedDirectories(allDirectories)
+  }
+
+  const collapseAll = () => {
+    setExpandedDirectories(new Set([''])) // Keep only root expanded
   }
 
   const handleFileClick = (filePath) => {
@@ -156,7 +200,27 @@ function FileTree({ repository, onFileSelect, selectedFile }) {
   return (
     <div className="file-tree">
       <div className="file-tree-header">
-        <h3>Files</h3>
+        <div className="file-tree-title-row">
+          <h3>Files</h3>
+          <div className="file-tree-controls">
+            <button
+              type="button"
+              onClick={expandAll}
+              className="tree-control-button"
+              title="Expand All"
+            >
+              [+]
+            </button>
+            <button
+              type="button"
+              onClick={collapseAll}
+              className="tree-control-button"
+              title="Collapse All"
+            >
+              [-]
+            </button>
+          </div>
+        </div>
         <input
           type="text"
           placeholder="Filter files..."
