@@ -62,15 +62,29 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
           
           // Check if this is a cross-repository reference
           if (reference.target.isExternal) {
-            // Cross-repository reference - show information and options
+            // Cross-repository reference - use the enhanced navigation
             const modulePath = reference.target.importPath || reference.target.package
             const version = reference.target.version || 'latest'
+            const moduleAtVersion = `${modulePath}@${version}`
             
-            console.log(`Cross-repository reference: ${symbol} in ${modulePath}@${version}`)
+            console.log(`Cross-repository reference: ${symbol} in ${moduleAtVersion}`)
             
-            // For now, show an alert with the information
-            // TODO: In the future, we could try to load the external repository or show a link
-            alert(`Cross-repository symbol: ${symbol}\n\nModule: ${modulePath}\nVersion: ${version}\n\nNavigation to external repositories is not yet supported.`)
+            // Extract package path from the import path
+            let packagePath = ''
+            if (modulePath.includes('/')) {
+              const parts = modulePath.split('/')
+              // For github.com/owner/repo -> '' (root package)
+              // For github.com/owner/repo/subpackage -> 'subpackage'
+              if (parts.length > 3) {
+                packagePath = parts.slice(3).join('/')
+              }
+            }
+            
+            console.log(`About to call onNavigateToSymbol with packagePath: '${packagePath}', symbol: '${symbol}', moduleAtVersion: '${moduleAtVersion}'`)
+            
+            // Use the enhanced navigation function
+            onNavigateToSymbol(packagePath, symbol, moduleAtVersion)
+            console.log(`onNavigateToSymbol call completed`)
             return
           }
           

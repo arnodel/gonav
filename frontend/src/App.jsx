@@ -127,14 +127,15 @@ function App() {
     updateURL(repo.moduleAtVersion)
   }
 
-  const handleFileSelect = async (filePath, lineToHighlight = null, updateURLFlag = true) => {
-    if (!repository) return
+  const handleFileSelect = async (filePath, lineToHighlight = null, updateURLFlag = true, moduleAtVersion = null) => {
+    const targetModule = moduleAtVersion || repository?.moduleAtVersion
+    if (!targetModule) return
     
     try {
-      console.log(`Loading file: ${filePath}`)
+      console.log(`Loading file: ${filePath} from ${targetModule}`)
       
       // The backend will automatically analyze the package containing this file
-      const response = await fetch(`http://localhost:8080/api/file/${encodeURIComponent(repository.moduleAtVersion)}/${filePath}`)
+      const response = await fetch(`http://localhost:8080/api/file/${encodeURIComponent(targetModule)}/${filePath}`)
       const data = await response.json()
       
       if (response.ok) {
@@ -155,6 +156,26 @@ function App() {
     }
   }
 
+  // Load external repository
+  const loadExternalRepository = async (moduleAtVersion) => {
+    try {
+      console.log(`Loading external repository: ${moduleAtVersion}`)
+      const response = await fetch(`http://localhost:8080/api/external/${encodeURIComponent(moduleAtVersion)}`)
+      const data = await response.json()
+      
+      if (response.ok) {
+        console.log(`External repository loaded: ${data.status}`)
+        return true
+      } else {
+        console.error('Failed to load external repository:', data.error)
+        return false
+      }
+    } catch (error) {
+      console.error('Error loading external repository:', error)
+      return false
+    }
+  }
+
   // New function for cross-package navigation
   const navigateToSymbol = async (packagePath, symbolName, moduleAtVersion = null) => {
     const targetModule = moduleAtVersion || repository?.moduleAtVersion
@@ -167,13 +188,18 @@ function App() {
     const isSameRepo = !moduleAtVersion || moduleAtVersion === currentModule
     
     if (!isSameRepo) {
-      // External repository - show message for now
-      alert(`Cross-repository navigation to ${moduleAtVersion}/${packagePath}.${symbolName} is not yet supported`)
-      return
+      // External repository - load it first
+      console.log(`Cross-repository navigation to ${moduleAtVersion}/${packagePath}.${symbolName}`)
+      
+      const loaded = await loadExternalRepository(moduleAtVersion)
+      if (!loaded) {
+        alert(`Failed to load external repository: ${moduleAtVersion}`)
+        return
+      }
     }
 
     try {
-      // Same repository - analyze the target package
+      // Analyze the target package (works for both same-repo and external)
       const packageInfo = await analyzePackage(targetModule, packagePath)
       if (!packageInfo) {
         alert(`Failed to analyze package: ${packagePath}`)
@@ -191,8 +217,36 @@ function App() {
       if (symbol) {
         console.log(`Found symbol: ${symbolName} at ${symbol.file}:${symbol.line}`)
         
-        // Navigate to the file containing the symbol
-        await handleFileSelect(symbol.file, symbol.line)
+        if (isSameRepo) {
+          // Same repository - navigate directly
+          await handleFileSelect(symbol.file, symbol.line)
+        } else {
+          // External repository - switch to new repo and navigate
+          console.log(`Switching to external repository: ${moduleAtVersion}`)
+          
+          // Load the external repository as the main repository
+          const response = await fetch(`http://localhost:8080/api/repo/${encodeURIComponent(moduleAtVersion)}`)
+          const repoData = await response.json()
+          
+          if (response.ok) {
+            const repo = {
+              ...repoData,
+              moduleAtVersion: moduleAtVersion
+            }
+            setRepository(repo)
+            setCurrentFile(null)
+            setFileContent(null)
+            setHighlightLine(null)
+            setPackages(new Map()) // Clear package cache for new repository
+            
+            // Navigate to the symbol in the new repository
+            setTimeout(async () => {
+              await handleFileSelect(symbol.file, symbol.line, true, moduleAtVersion)
+            }, 100) // Small delay to ensure state updates
+          } else {
+            alert(`Failed to switch to external repository: ${repoData.error}`)
+          }
+        }
       } else {
         console.log(`Symbol ${symbolName} not found in package ${packagePath}`)
         const availableExported = Object.keys(packageInfo.exportedSymbols || {})

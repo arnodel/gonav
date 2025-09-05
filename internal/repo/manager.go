@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,6 +24,17 @@ type RepositoryInfo struct {
 type FileInfo struct {
 	Path string `json:"path"`
 	IsGo bool   `json:"isGo"`
+}
+
+type GoModDownloadInfo struct {
+	Path     string `json:"Path"`     // Module path (e.g., "github.com/arnodel/edit")
+	Version  string `json:"Version"`  // Resolved version (e.g., "v0.0.0-20220202110212-dfc8d7a13890")
+	Info     string `json:"Info"`     // Path to .info file
+	GoMod    string `json:"GoMod"`    // Path to .mod file
+	Zip      string `json:"Zip"`      // Path to .zip file
+	Dir      string `json:"Dir"`      // Path to cached source directory
+	Sum      string `json:"Sum"`      // Checksum
+	GoModSum string `json:"GoModSum"` // GoMod checksum
 }
 
 func NewManager() *Manager {
@@ -85,16 +97,53 @@ func (m *Manager) parseModuleAtVersion(moduleAtVersion string) (string, string) 
 }
 
 func (m *Manager) downloadRepository(modulePath, version, localPath string) error {
+	// Try go mod download first (preferred method for Go modules)
+	localDir, err := m.downloadWithGoMod(modulePath, version)
+	if err == nil {
+		// Success with go mod download, create a symlink or copy to our expected location
+		os.RemoveAll(localPath)
+		return os.Symlink(localDir, localPath)
+	}
+
+	// Fall back to git clone for modules not available via go proxy
+	fmt.Printf("go mod download failed for %s@%s: %v, trying git clone...\n", modulePath, version, err)
+	
 	// Remove existing directory if it exists
 	os.RemoveAll(localPath)
 
-	// For now, we'll use git clone for GitHub repositories
-	// In a production system, you'd want to handle different VCS systems
+	// Use git clone as fallback
 	if strings.HasPrefix(modulePath, "github.com/") {
 		return m.cloneGitRepository(modulePath, version, localPath)
 	}
 
-	return fmt.Errorf("unsupported module path: %s", modulePath)
+	return fmt.Errorf("unsupported module path and go mod download failed: %s", modulePath)
+}
+
+func (m *Manager) downloadWithGoMod(modulePath, version string) (string, error) {
+	moduleAtVersion := modulePath + "@" + version
+	
+	// Use go mod download with JSON output to get the exact location
+	cmd := exec.Command("go", "mod", "download", "-json", moduleAtVersion)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("go mod download failed: %w", err)
+	}
+
+	var downloadInfo GoModDownloadInfo
+	if err := json.Unmarshal(output, &downloadInfo); err != nil {
+		return "", fmt.Errorf("failed to parse go mod download output: %w", err)
+	}
+
+	// Verify the directory exists
+	if downloadInfo.Dir == "" {
+		return "", fmt.Errorf("go mod download did not provide directory path")
+	}
+
+	if _, err := os.Stat(downloadInfo.Dir); os.IsNotExist(err) {
+		return "", fmt.Errorf("go mod download directory does not exist: %s", downloadInfo.Dir)
+	}
+
+	return downloadInfo.Dir, nil
 }
 
 func (m *Manager) cloneGitRepository(modulePath, version, localPath string) error {
@@ -146,7 +195,14 @@ func (m *Manager) buildRepositoryInfo(moduleAtVersion, localPath string) (*Repos
 func (m *Manager) findGoFiles(rootPath string) ([]FileInfo, error) {
 	var files []FileInfo
 
-	err := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
+	// Resolve symlinks to the actual path
+	resolvedPath, err := filepath.EvalSymlinks(rootPath)
+	if err != nil {
+		// If symlink resolution fails, use the original path
+		resolvedPath = rootPath
+	}
+
+	err = filepath.Walk(resolvedPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -165,8 +221,8 @@ func (m *Manager) findGoFiles(rootPath string) ([]FileInfo, error) {
 		}
 
 		if !info.IsDir() {
-			// Get relative path
-			relPath, err := filepath.Rel(rootPath, path)
+			// Get relative path from the resolved root
+			relPath, err := filepath.Rel(resolvedPath, path)
 			if err != nil {
 				return err
 			}
