@@ -56,6 +56,7 @@ type Symbol struct {
 	// Fields for external references
 	ImportPath  string `json:"importPath,omitempty"`  // Full import path like "github.com/arnodel/edit"
 	IsExternal  bool   `json:"isExternal,omitempty"`  // True if this is a cross-repository reference
+	IsStdLib    bool   `json:"isStdLib,omitempty"`    // True if this is a Go standard library symbol
 	Version     string `json:"version,omitempty"`     // Version from go.mod if available
 }
 
@@ -140,6 +141,23 @@ func (info *ModuleInfo) IsExternalImport(importPath string) bool {
 	}
 	// Check if import is under current module path
 	return !strings.HasPrefix(importPath, info.ModulePath+"/") && importPath != info.ModulePath
+}
+
+// IsStandardLibraryImport determines if an import path is a Go standard library package
+func IsStandardLibraryImport(importPath string) bool {
+	if importPath == "" {
+		return false
+	}
+	
+	// Local/main packages are not standard library
+	if importPath == "main" {
+		return false
+	}
+	
+	// Standard library packages don't contain dots (domain names)
+	// This is a reliable way to detect them since all external packages
+	// should have domain names like github.com/user/repo
+	return !strings.Contains(importPath, ".")
 }
 
 // ResolveImport resolves an import path considering replace directives and returns version info
@@ -436,9 +454,14 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 			// Check if symbol is exported (starts with capital letter)
 			if len(symbol.Name) > 0 && symbol.Name[0] >= 'A' && symbol.Name[0] <= 'Z' {
 				packageInfo.ExportedSymbols[symbol.Name] = symbol
-				fmt.Printf("Added exported symbol: %s (%s) from %s:%d\n", symbol.Name, symbol.Type, symbol.File, symbol.Line)
+				fmt.Printf("Added exported symbol: %s (%s) from %s:%d (isStdLib=%t)\n", symbol.Name, symbol.Type, symbol.File, symbol.Line, symbol.IsStdLib)
 			} else {
-				fmt.Printf("Added symbol: %s (%s) from %s:%d\n", symbol.Name, symbol.Type, symbol.File, symbol.Line)
+				fmt.Printf("Added symbol: %s (%s) from %s:%d (isStdLib=%t)\n", symbol.Name, symbol.Type, symbol.File, symbol.Line, symbol.IsStdLib)
+			}
+			
+			// Debug logging for Buffer symbol specifically
+			if symbol.Name == "Buffer" {
+				fmt.Printf("*** BUFFER SYMBOL IN FINAL COLLECTION: file=%s line=%d pkg=%s isStdLib=%t\n", symbol.File, symbol.Line, symbol.Package, symbol.IsStdLib)
 			}
 		}
 
@@ -507,7 +530,10 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 				symbol := a.createSymbolFromObject(obj, relPath, pos)
 				if symbol != nil {
 					fileInfo.Symbols[symbol.Name] = symbol
-					fmt.Printf("Found definition: %s at %s:%d\n", symbol.Name, relPath, pos.Line)
+					fmt.Printf("Found definition: %s at %s:%d (isStdLib=%t) pkg=%s\n", symbol.Name, relPath, pos.Line, symbol.IsStdLib, symbol.Package)
+					if symbol.Name == "Buffer" {
+						fmt.Printf("*** BUFFER SYMBOL ADDED TO COLLECTION: file=%s line=%d pkg=%s isStdLib=%t\n", symbol.File, symbol.Line, symbol.Package, symbol.IsStdLib)
+					}
 				}
 			}
 
@@ -525,6 +551,13 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 					ref.Target = targetSymbol
 					fmt.Printf("Found reference with target: %s -> %s:%d (%s)\n", 
 						node.Name, targetSymbol.File, targetSymbol.Line, targetSymbol.Package)
+					
+					// Add standard library symbols to the main symbols collection so frontend can access them
+					if targetSymbol.IsStdLib {
+						fileInfo.Symbols[targetSymbol.Name] = targetSymbol
+						fmt.Printf("*** ADDED STDLIB TARGET TO SYMBOLS: %s from package %s (isStdLib=%t)\n", 
+							targetSymbol.Name, targetSymbol.Package, targetSymbol.IsStdLib)
+					}
 				} else {
 					fmt.Printf("Found reference without target: %s at %s:%d\n", node.Name, relPath, pos.Line)
 				}
@@ -550,6 +583,13 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 					ref.Target = targetSymbol
 					fmt.Printf("Found selector reference with target: %s -> %s:%d (%s)\n", 
 						node.Sel.Name, targetSymbol.File, targetSymbol.Line, targetSymbol.Package)
+					
+					// Add standard library symbols to the main symbols collection so frontend can access them
+					if targetSymbol.IsStdLib {
+						fileInfo.Symbols[targetSymbol.Name] = targetSymbol
+						fmt.Printf("*** ADDED STDLIB TARGET TO SYMBOLS: %s from package %s (isStdLib=%t)\n", 
+							targetSymbol.Name, targetSymbol.Package, targetSymbol.IsStdLib)
+					}
 				} else {
 					fmt.Printf("Found selector reference without target: %s at %s:%d\n", node.Sel.Name, relPath, pos.Line)
 				}
@@ -572,6 +612,13 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 							ref.Target = targetSymbol
 							fmt.Printf("Found selector type reference with target: %s -> %s:%d (%s)\n", 
 								node.Sel.Name, targetSymbol.File, targetSymbol.Line, targetSymbol.Package)
+							
+							// Add standard library symbols to the main symbols collection so frontend can access them
+							if targetSymbol.IsStdLib {
+								fileInfo.Symbols[targetSymbol.Name] = targetSymbol
+								fmt.Printf("*** ADDED STDLIB TARGET TO SYMBOLS: %s from package %s (isStdLib=%t)\n", 
+									targetSymbol.Name, targetSymbol.Package, targetSymbol.IsStdLib)
+							}
 						} else {
 							fmt.Printf("Found selector type reference without target: %s at %s:%d\n", node.Sel.Name, relPath, pos.Line)
 						}
@@ -601,6 +648,7 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 							importPath := importInfo.Path
 							resolvedPath, version := moduleInfo.ResolveImport(importPath)
 							isExternal := moduleInfo.IsExternalImport(importPath)
+							isStdLib := IsStandardLibraryImport(importPath)
 							
 							// Create external reference
 							ref := &Reference{
@@ -616,7 +664,8 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 									Column:     0,  // Will be resolved later
 									Package:    importPath, // Store the original import path
 									ImportPath: resolvedPath, // Store the resolved import path
-									IsExternal: isExternal,   // True if cross-repository
+									IsExternal: isExternal,   // True if cross-repository  
+									IsStdLib:   isStdLib,     // True if standard library
 									Version:    version,      // Version from go.mod if available
 								},
 							}
@@ -663,6 +712,7 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 							importPath := importInfo.Path
 							resolvedPath, version := moduleInfo.ResolveImport(importPath)
 							isExternal := moduleInfo.IsExternalImport(importPath)
+							isStdLib := IsStandardLibraryImport(importPath)
 							
 							// Create external reference for the type name in composite literal
 							ref := &Reference{
@@ -678,7 +728,8 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 									Column:     0,  // Will be resolved later
 									Package:    importPath, // Store the original import path
 									ImportPath: resolvedPath, // Store the resolved import path
-									IsExternal: isExternal,   // True if cross-repository
+									IsExternal: isExternal,   // True if cross-repository  
+									IsStdLib:   isStdLib,     // True if standard library
 									Version:    version,      // Version from go.mod if available
 								},
 							}
@@ -727,18 +778,29 @@ func (a *PackageAnalyzer) createSymbolFromObjectWithBase(obj types.Object, file 
 	
 	// Handle case where we might not have a valid package (e.g., built-in types)
 	var packageName string
+	var isStdLib bool
 	if obj.Pkg() != nil {
 		packageName = obj.Pkg().Name()
+		// Check if this is a standard library package using the import path
+		importPath := obj.Pkg().Path()
+		isStdLib = IsStandardLibraryImport(importPath)
 	} else {
 		packageName = "builtin"
+		isStdLib = true // Built-in types are part of the standard library
 	}
 
 	symbol := &Symbol{
-		Name:    obj.Name(),
-		File:    targetFile,
-		Line:    pos.Line,
-		Column:  pos.Column,
-		Package: packageName,
+		Name:     obj.Name(),
+		File:     targetFile,
+		Line:     pos.Line,
+		Column:   pos.Column,
+		Package:  packageName,
+		IsStdLib: isStdLib,
+	}
+	
+	// Debug logging for standard library symbols
+	if isStdLib {
+		fmt.Printf("DEBUG: Created stdlib symbol: %s from package %s (isStdLib=%t)\n", obj.Name(), packageName, isStdLib)
 	}
 
 	switch o := obj.(type) {
@@ -778,18 +840,29 @@ func (a *PackageAnalyzer) createSymbolFromObject(obj types.Object, file string, 
 	
 	// Handle case where we might not have a valid package (e.g., built-in types)
 	var packageName string
+	var isStdLib bool
 	if obj.Pkg() != nil {
 		packageName = obj.Pkg().Name()
+		// Check if this is a standard library package using the import path
+		importPath := obj.Pkg().Path()
+		isStdLib = IsStandardLibraryImport(importPath)
 	} else {
 		packageName = "builtin"
+		isStdLib = true // Built-in types are part of the standard library
 	}
 
 	symbol := &Symbol{
-		Name:    obj.Name(),
-		File:    targetFile,
-		Line:    pos.Line,
-		Column:  pos.Column,
-		Package: packageName,
+		Name:     obj.Name(),
+		File:     targetFile,
+		Line:     pos.Line,
+		Column:   pos.Column,
+		Package:  packageName,
+		IsStdLib: isStdLib,
+	}
+	
+	// Debug logging for standard library symbols
+	if isStdLib {
+		fmt.Printf("DEBUG: Created stdlib symbol: %s from package %s (isStdLib=%t)\n", obj.Name(), packageName, isStdLib)
 	}
 
 	switch o := obj.(type) {

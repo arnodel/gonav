@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import RepositoryLoader from './components/RepositoryLoader'
 import FileTree from './components/FileTree'
 import CodeViewer from './components/CodeViewer'
+import NavigationBreadcrumbs from './components/NavigationBreadcrumbs'
 
 function App() {
   const [repository, setRepository] = useState(null)
@@ -9,6 +10,8 @@ function App() {
   const [fileContent, setFileContent] = useState(null)
   const [highlightLine, setHighlightLine] = useState(null)
   const [packages, setPackages] = useState(new Map()) // packagePath -> packageInfo cache
+  const [breadcrumbs, setBreadcrumbs] = useState([]) // Navigation history
+  const [historyIndex, setHistoryIndex] = useState(-1) // Current position in history (-1 = no history)
 
   // URL routing functions
   const updateURL = (moduleAtVersion, filePath = null) => {
@@ -127,9 +130,119 @@ function App() {
     updateURL(repo.moduleAtVersion)
   }
 
-  const handleFileSelect = async (filePath, lineToHighlight = null, updateURLFlag = true, moduleAtVersion = null) => {
+  const addBreadcrumb = (filePath, lineToHighlight, symbol, moduleAtVersion) => {
+    const targetModule = moduleAtVersion || repository?.moduleAtVersion
+    if (!targetModule || !filePath) return
+
+    const fileName = filePath.split('/').pop()
+    const breadcrumb = {
+      filePath,
+      fileName,
+      line: lineToHighlight,
+      symbol,
+      moduleAtVersion: targetModule,
+      currentModule: repository?.moduleAtVersion,
+      timestamp: Date.now()
+    }
+
+    setBreadcrumbs(prev => {
+      // If we're not at the end of history, truncate everything after current position
+      const currentHistory = historyIndex === -1 ? prev : prev.slice(historyIndex)
+      
+      // Add new breadcrumb at the beginning (most recent first)
+      const newBreadcrumbs = [breadcrumb, ...currentHistory]
+      
+      // Keep only last 20 entries
+      return newBreadcrumbs.slice(0, 20)
+    })
+    
+    // Reset to beginning of history (most recent)
+    setHistoryIndex(0)
+  }
+
+  const handleBreadcrumbNavigate = async (breadcrumbIndex) => {
+    // Set history index to the clicked position
+    setHistoryIndex(breadcrumbIndex)
+    
+    const breadcrumb = breadcrumbs[breadcrumbIndex]
+    if (!breadcrumb) return
+    
+    if (breadcrumb.moduleAtVersion !== repository?.moduleAtVersion) {
+      // Cross-repository navigation - but don't add to history
+      await navigateToExternalRepo(breadcrumb)
+    } else {
+      // Same repository navigation - don't add to history
+      await navigateWithoutHistory(breadcrumb.filePath, breadcrumb.line, breadcrumb.moduleAtVersion)
+    }
+  }
+
+  const navigateWithoutHistory = async (filePath, lineToHighlight = null, moduleAtVersion = null) => {
     const targetModule = moduleAtVersion || repository?.moduleAtVersion
     if (!targetModule) return
+    
+    try {
+      console.log(`Loading file: ${filePath} from ${targetModule}`)
+      
+      const response = await fetch(`http://localhost:8080/api/file/${encodeURIComponent(targetModule)}/${filePath}`)
+      const data = await response.json()
+      
+      if (response.ok) {
+        setCurrentFile(filePath)
+        setFileContent(data)
+        setHighlightLine(lineToHighlight)
+        updateURL(repository.moduleAtVersion, filePath)
+        // Note: Don't add breadcrumb here - this is for history navigation
+      } else {
+        console.error('Failed to load file:', data.error)
+        alert(`Failed to load file: ${data.error}`)
+      }
+    } catch (error) {
+      console.error('Failed to load file:', error)
+      alert('Failed to load file')
+    }
+  }
+
+  const navigateToExternalRepo = async (breadcrumb) => {
+    // Similar to navigateToSymbol but for history navigation
+    console.log(`Navigating to external repository from history: ${breadcrumb.moduleAtVersion}`)
+    
+    try {
+      const response = await fetch(`http://localhost:8080/api/repo/${encodeURIComponent(breadcrumb.moduleAtVersion)}`)
+      const repoData = await response.json()
+      
+      if (response.ok) {
+        const repo = {
+          ...repoData,
+          moduleAtVersion: breadcrumb.moduleAtVersion
+        }
+        setRepository(repo)
+        setCurrentFile(null)
+        setFileContent(null)
+        setHighlightLine(null)
+        setPackages(new Map()) // Clear package cache for new repository
+        
+        // Navigate to the file in the new repository
+        setTimeout(async () => {
+          await navigateWithoutHistory(breadcrumb.filePath, breadcrumb.line, breadcrumb.moduleAtVersion)
+        }, 100)
+      } else {
+        alert(`Failed to switch to external repository: ${repoData.error}`)
+      }
+    } catch (error) {
+      console.error('Error navigating to external repo from history:', error)
+      alert('Failed to navigate from history')
+    }
+  }
+
+  const handleFileSelect = async (filePath, lineToHighlight = null, updateURLFlag = true, moduleAtVersion = null, symbol = null, clickLine = null) => {
+    const targetModule = moduleAtVersion || repository?.moduleAtVersion
+    if (!targetModule) return
+
+    // If we're navigating to a different file, add current location to breadcrumbs
+    if (currentFile && currentFile !== filePath && repository?.moduleAtVersion) {
+      const currentFileName = currentFile.split('/').pop()
+      addBreadcrumb(currentFile, clickLine || highlightLine, symbol ? `clicked on ${symbol}` : `viewed ${currentFileName}`, repository.moduleAtVersion)
+    }
     
     try {
       console.log(`Loading file: ${filePath} from ${targetModule}`)
@@ -177,7 +290,7 @@ function App() {
   }
 
   // New function for cross-package navigation
-  const navigateToSymbol = async (packagePath, symbolName, moduleAtVersion = null) => {
+  const navigateToSymbol = async (packagePath, symbolName, moduleAtVersion = null, clickLine = null) => {
     const targetModule = moduleAtVersion || repository?.moduleAtVersion
     if (!targetModule) return
 
@@ -219,7 +332,7 @@ function App() {
         
         if (isSameRepo) {
           // Same repository - navigate directly
-          await handleFileSelect(symbol.file, symbol.line)
+          await handleFileSelect(symbol.file, symbol.line, true, null, symbolName, clickLine)
         } else {
           // External repository - switch to new repo and navigate
           console.log(`Switching to external repository: ${moduleAtVersion}`)
@@ -241,7 +354,7 @@ function App() {
             
             // Navigate to the symbol in the new repository
             setTimeout(async () => {
-              await handleFileSelect(symbol.file, symbol.line, true, moduleAtVersion)
+              await handleFileSelect(symbol.file, symbol.line, true, moduleAtVersion, symbolName, clickLine)
             }, 100) // Small delay to ensure state updates
           } else {
             alert(`Failed to switch to external repository: ${repoData.error}`)
@@ -273,11 +386,24 @@ function App() {
         {repository && (
           <>
             <aside className="sidebar">
-              <FileTree 
-                repository={repository} 
-                onFileSelect={handleFileSelect}
-                selectedFile={currentFile}
-              />
+              <div className="sidebar-top">
+                <FileTree 
+                  repository={repository} 
+                  onFileSelect={handleFileSelect}
+                  selectedFile={currentFile}
+                />
+              </div>
+              <div className="sidebar-bottom">
+                <NavigationBreadcrumbs 
+                  breadcrumbs={breadcrumbs}
+                  currentIndex={historyIndex}
+                  onNavigate={handleBreadcrumbNavigate}
+                  onClear={() => {
+                    setBreadcrumbs([])
+                    setHistoryIndex(-1)
+                  }}
+                />
+              </div>
             </aside>
             
             <main className="main-content">

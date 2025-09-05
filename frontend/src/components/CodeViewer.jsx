@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react'
 
+
 function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymbol, highlightLine = null }) {
   const codeRef = useRef(null)
 
@@ -26,120 +27,85 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
     )
   }
 
-  const handleSymbolClick = async (symbol) => {
-    console.log('Symbol clicked:', symbol)
+  const handleSymbolClick = async (symbol, clickLine = null, clickColumn = null) => {
+    console.log('Symbol clicked:', symbol, 'at line:', clickLine, 'column:', clickColumn)
     
-    // First check if it's a defined symbol in this file (but skip external references)
-    if (content.symbols && content.symbols[symbol]) {
-      const symbolInfo = content.symbols[symbol]
-      console.log('Found symbol definition:', symbolInfo)
+    // Use position-based lookup in references array instead of name-based lookup in symbols
+    if (content.references && clickLine && clickColumn) {
+      // Find the reference at the exact click position
+      const reference = content.references.find(ref => 
+        ref.name === symbol && 
+        ref.line === clickLine && 
+        Math.abs(ref.column - clickColumn) <= symbol.length  // Allow some tolerance for click position
+      )
       
-      // Skip external references - they should be handled by the reference logic below
-      if (symbolInfo.type === 'external') {
-        console.log('Skipping external symbol, will handle via references')
-      } else if (symbolInfo.file === file) {
-        // Same file - scroll to line and highlight
-        console.log(`Navigate to line ${symbolInfo.line} in current file`)
-        onSymbolClick(symbolInfo.file, symbolInfo.line)
-        return
-      } else {
-        // Different file - load it with line to highlight
-        console.log('Navigating to different file:', symbolInfo.file, 'line:', symbolInfo.line)
-        onSymbolClick(symbolInfo.file, symbolInfo.line)
-        return
-      }
-    }
-    
-    // Check if it's a reference that points to a definition elsewhere
-    if (content.references) {
-      const reference = content.references.find(ref => ref.name === symbol)
       if (reference && reference.target) {
         console.log('Found reference with target:', reference.target)
         
-        // Check if this is an external reference (lazy resolution)
-        if (reference.target.type === 'external') {
-          console.log('External reference detected:', reference.target)
-          
-          // Check if this is a cross-repository reference
-          if (reference.target.isExternal) {
-            // Cross-repository reference - use the enhanced navigation
-            const modulePath = reference.target.importPath || reference.target.package
-            const version = reference.target.version || 'latest'
-            const moduleAtVersion = `${modulePath}@${version}`
-            
-            console.log(`Cross-repository reference: ${symbol} in ${moduleAtVersion}`)
-            
-            // Extract package path from the import path
-            let packagePath = ''
-            if (modulePath.includes('/')) {
-              const parts = modulePath.split('/')
-              // For github.com/owner/repo -> '' (root package)
-              // For github.com/owner/repo/subpackage -> 'subpackage'
-              if (parts.length > 3) {
-                packagePath = parts.slice(3).join('/')
-              }
-            }
-            
-            console.log(`About to call onNavigateToSymbol with packagePath: '${packagePath}', symbol: '${symbol}', moduleAtVersion: '${moduleAtVersion}'`)
-            
-            // Use the enhanced navigation function
-            onNavigateToSymbol(packagePath, symbol, moduleAtVersion)
-            console.log(`onNavigateToSymbol call completed`)
-            return
-          }
-          
-          // Same-repository external reference - extract package path
-          const importPath = reference.target.package
-          let packagePath = importPath
-          
-          // If it's from the same module, extract the relative path
-          if (importPath.includes('/')) {
-            const parts = importPath.split('/')
-            // Look for common module patterns and extract the package path
-            // For github.com/owner/repo/path/to/package -> path/to/package
-            const moduleStart = parts.findIndex((part, index) => 
-              index >= 2 && !part.includes('.') // Skip domain and owner parts
-            )
-            if (moduleStart > 0 && moduleStart < parts.length - 1) {
-              packagePath = parts.slice(moduleStart + 1).join('/')
-            } else {
-              // Fallback: use the last part as package name
-              packagePath = parts[parts.length - 1]
-            }
-          }
-          
-          console.log('Resolved same-repo package path:', packagePath)
-          onNavigateToSymbol(packagePath, symbol)
+        // Check if this is a builtin symbol
+        if (reference.target.package === 'builtin') {
+          alert(`'${symbol}' is a Go builtin type/function. Cannot navigate to builtin source.`)
           return
         }
         
-        // Determine current package from the file path
-        const currentPackagePath = file.includes('/') ? file.substring(0, file.lastIndexOf('/')) : ''
+        // Check if this is a standard library symbol
+        if (reference.target.isStdLib) {
+          alert(`'${symbol}' is a Go standard library symbol from package '${reference.target.package}'. Cannot navigate to standard library source.`)
+          return
+        }
         
-        // Check if target is in a different package (cross-package navigation)
+        // Handle external references (cross-repository)
+        if (reference.target.type === 'external' && reference.target.isExternal) {
+          const modulePath = reference.target.importPath || reference.target.package
+          const version = reference.target.version || 'latest'
+          const moduleAtVersion = `${modulePath}@${version}`
+          
+          console.log(`Cross-repository reference: ${symbol} in ${moduleAtVersion}`)
+          
+          // Extract package path from the import path
+          let packagePath = ''
+          if (modulePath.includes('/')) {
+            const parts = modulePath.split('/')
+            if (parts.length > 3) {
+              packagePath = parts.slice(3).join('/')
+            }
+          }
+          
+          console.log(`About to call onNavigateToSymbol with packagePath: '${packagePath}', symbol: '${symbol}', moduleAtVersion: '${moduleAtVersion}'`)
+          onNavigateToSymbol(packagePath, symbol, moduleAtVersion, clickLine)
+          return
+        }
+        
+        // Handle same-repository references (including cross-package within same repo)
+        const currentPackagePath = file.includes('/') ? file.substring(0, file.lastIndexOf('/')) : ''
         const targetFile = reference.target.file
         const targetPackagePath = targetFile.includes('/') ? targetFile.substring(0, targetFile.lastIndexOf('/')) : ''
         
-        // Cross-package navigation if target is in a different package within the same repo
+        // Cross-package navigation within same repository
         if (targetPackagePath !== currentPackagePath && targetPackagePath && onNavigateToSymbol) {
           console.log('Cross-package navigation to:', targetPackagePath, symbol)
-          onNavigateToSymbol(targetPackagePath, symbol)
+          onNavigateToSymbol(targetPackagePath, symbol, null, clickLine)
           return
         }
         
         // Same package navigation (including same file)
+        console.log('Same package navigation to:', reference.target.file, 'line:', reference.target.line)
         onSymbolClick(reference.target.file, reference.target.line)
         return
       }
     }
     
-    console.log('No symbol info found for:', symbol)
-    console.log('Available symbols:', Object.keys(content.symbols || {}))
+    // Fallback: if no position-based reference found, log debug info
+    console.log('No reference found at position for symbol:', symbol)
     console.log('Available references:', content.references?.length || 0)
+    if (content.references) {
+      const sameNameRefs = content.references.filter(ref => ref.name === symbol)
+      console.log(`Found ${sameNameRefs.length} references with same name:`, sameNameRefs.map(ref => `${ref.line}:${ref.column}`))
+    }
   }
 
   const renderCodeWithSymbols = (code) => {
-    if (!content.symbols && !content.references) return code
+    if (!content.references) return code
 
     const lines = code.split('\n')
     
@@ -219,7 +185,25 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
           }}
           onClick={(e) => {
             if (e.target.classList.contains('symbol')) {
-              handleSymbolClick(e.target.dataset.symbol)
+              // Find the line number by walking up the DOM to the line div
+              let lineElement = e.target.closest('[data-line]')
+              const clickLine = lineElement ? parseInt(lineElement.dataset.line) : null
+              
+              // Calculate approximate column position from the click
+              const lineContentElement = lineElement?.querySelector('.line-content')
+              let clickColumn = null
+              if (lineContentElement && clickLine) {
+                // Get the position of the symbol within the line content
+                const symbolElement = e.target
+                const lineText = lineContentElement.textContent
+                const symbolText = symbolElement.textContent
+                const symbolStart = lineText.indexOf(symbolText)
+                if (symbolStart !== -1) {
+                  clickColumn = symbolStart + 1 // Convert to 1-based indexing to match server
+                }
+              }
+              
+              handleSymbolClick(e.target.dataset.symbol, clickLine, clickColumn)
             }
           }}
         />
