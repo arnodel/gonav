@@ -130,15 +130,6 @@ curl "http://localhost:8080/api/file/github.com%2Farnodel%2Fgolua%40v0.1.0/cmd/g
 ```json
 {
   "source": "package main\n\nimport (\n\t\"fmt\"\n)...",
-  "symbols": {
-    "NewBuffer": {
-      "name": "NewBuffer",
-      "type": "func", 
-      "file": "cmd/golua-repl/luabuffer.go",
-      "line": 41,
-      "package": "main"
-    }
-  },
   "references": [
     {
       "name": "fmt",
@@ -173,12 +164,6 @@ curl "http://localhost:8080/api/file/github.com%2Farnodel%2Fgolua%40v0.1.0/cmd/g
 
 **Response Fields:**
 - `source`: Raw source code content
-- `symbols`: Map of symbol name to symbol definition
-  - `name`: Symbol identifier
-  - `type`: Symbol type (`func`, `var`, `const`, `type`, etc.)
-  - `file`: File where symbol is defined
-  - `line`: Line number of definition
-  - `package`: Package name
 - `references`: Array of all symbol references in the file
   - `name`: Referenced symbol name
   - `file`: File containing the reference

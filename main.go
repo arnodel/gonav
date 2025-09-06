@@ -238,23 +238,11 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 		// Convert analyzer format to frontend-expected format
 		frontendFileInfo := map[string]interface{}{
 			"source": analyzerFileInfo.Source,
-			"symbols": make(map[string]interface{}),
 			"references": analyzerFileInfo.References,
 		}
 		
-		// Convert symbols to the expected format
-		for _, symbol := range analyzerFileInfo.Symbols {
-			frontendFileInfo["symbols"].(map[string]interface{})[symbol.Name] = map[string]interface{}{
-				"name": symbol.Name,
-				"type": symbol.Type,
-				"file": symbol.File,
-				"line": symbol.Line,
-				"package": symbol.Package,
-			}
-		}
-		
-		fmt.Printf("Converted to frontend format with %d symbols\n", 
-			len(frontendFileInfo["symbols"].(map[string]interface{})))
+		fmt.Printf("Converted to frontend format with %d references\n", 
+			len(analyzerFileInfo.References))
 		
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(frontendFileInfo)
@@ -288,7 +276,6 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	// Return basic file info without cross-references
 	basicFileInfo := map[string]interface{}{
 		"source":     string(content),
-		"symbols":    make(map[string]interface{}),
 		"references": make([]interface{}, 0),
 	}
 
