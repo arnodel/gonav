@@ -304,64 +304,6 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(basicFileInfo)
 }
 
-func (s *Server) handleExternalRepo(w http.ResponseWriter, r *http.Request) {
-	// Enable CORS
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-	if r.Method == http.MethodOptions {
-		return
-	}
-
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Extract module@version from URL path
-	path := strings.TrimPrefix(r.URL.Path, "/api/external/")
-	moduleAtVersion, err := url.QueryUnescape(path)
-	if err != nil {
-		http.Error(w, "Invalid module format", http.StatusBadRequest)
-		return
-	}
-
-	fmt.Printf("Loading external repository: '%s'\n", moduleAtVersion)
-
-	// Check if already loaded
-	if s.repoManager.GetRepositoryPath(moduleAtVersion) != "" {
-		// Already loaded, just return success
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "already_loaded"})
-		return
-	}
-
-	// Load the external repository
-	repoInfo, err := s.repoManager.LoadRepository(moduleAtVersion)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to load external repository: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Discover packages in the repository (fast operation)
-	repoPath := s.repoManager.GetRepositoryPath(moduleAtVersion)
-	if repoPath != "" {
-		packageDiscoveries, err := s.analyzer.DiscoverPackages(repoPath)
-		if err != nil {
-			fmt.Printf("Failed to discover packages in external repo (continuing anyway): %v\n", err)
-		} else {
-			s.discoveryCache[moduleAtVersion] = packageDiscoveries
-			fmt.Printf("Successfully discovered %d packages in external repo\n", len(packageDiscoveries))
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "loaded",
-		"repository": repoInfo,
-	})
-}
 
 func (s *Server) setupRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
@@ -370,7 +312,6 @@ func (s *Server) setupRoutes() *http.ServeMux {
 	mux.HandleFunc("/api/repo/", s.handleRepo)
 	mux.HandleFunc("/api/package/", s.handlePackage)
 	mux.HandleFunc("/api/file/", s.handleFile)
-	mux.HandleFunc("/api/external/", s.handleExternalRepo)
 
 	// Serve static files for development
 	mux.Handle("/", http.FileServer(http.Dir("frontend/dist")))

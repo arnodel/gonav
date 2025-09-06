@@ -269,18 +269,18 @@ function App() {
     }
   }
 
-  // Load external repository
+  // Load external repository (same as regular repository loading)
   const loadExternalRepository = async (moduleAtVersion) => {
     try {
       console.log(`Loading external repository: ${moduleAtVersion}`)
-      const response = await fetch(`http://localhost:8080/api/external/${encodeURIComponent(moduleAtVersion)}`)
+      const response = await fetch(`http://localhost:8080/api/repo/${encodeURIComponent(moduleAtVersion)}`)
       const data = await response.json()
       
       if (response.ok) {
-        console.log(`External repository loaded: ${data.status}`)
+        console.log(`External repository loaded: ${moduleAtVersion}`)
         return true
       } else {
-        console.error('Failed to load external repository:', data.error)
+        console.error('Failed to load external repository:', response.statusText)
         return false
       }
     } catch (error) {
@@ -319,13 +319,8 @@ function App() {
         return
       }
 
-      // First try to find the symbol in exported symbols (for cross-package references)
-      let symbol = packageInfo.exportedSymbols?.[symbolName]
-      
-      // If not found in exported symbols, try all symbols (for internal navigation)
-      if (!symbol) {
-        symbol = packageInfo.symbols?.[symbolName]
-      }
+      // Find the symbol in all symbols (exported symbols are those starting with uppercase)
+      let symbol = packageInfo.symbols?.[symbolName]
       
       if (symbol) {
         console.log(`Found symbol: ${symbolName} at ${symbol.file}:${symbol.line}`)
@@ -362,7 +357,9 @@ function App() {
         }
       } else {
         console.log(`Symbol ${symbolName} not found in package ${packagePath}`)
-        const availableExported = Object.keys(packageInfo.exportedSymbols || {})
+        const availableExported = Object.keys(packageInfo.symbols || {}).filter(name => 
+          name.length > 0 && name[0] >= 'A' && name[0] <= 'Z'
+        )
         console.log(`Available exported symbols in ${packagePath}:`, availableExported)
         alert(`Symbol '${symbolName}' not found in package '${packagePath}'`)
       }

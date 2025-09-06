@@ -27,13 +27,12 @@ type PackageDiscovery struct {
 }
 
 type PackageInfo struct {
-	Name            string                 `json:"name"`
-	Path            string                 `json:"path"`
-	Files           map[string]*FileInfo   `json:"files"`
-	Symbols         map[string]*Symbol     `json:"symbols"`         // All symbols in this package
-	ExportedSymbols map[string]*Symbol     `json:"exportedSymbols"` // Only exported (public) symbols
-	References      map[string][]*Reference `json:"references"`      // Symbol -> list of references
-	Imports         map[string]string      `json:"imports"`         // alias -> package path
+	Name       string                 `json:"name"`
+	Path       string                 `json:"path"`
+	Files      map[string]*FileInfo   `json:"files"`
+	Symbols    map[string]*Symbol     `json:"symbols"`         // All symbols in this package
+	References map[string][]*Reference `json:"references"`      // Symbol -> list of references
+	Imports    map[string]string      `json:"imports"`         // alias -> package path
 }
 
 type FileInfo struct {
@@ -421,13 +420,12 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 
 	// Create package info
 	packageInfo := &PackageInfo{
-		Name:            pkgName,
-		Path:            basePath,
-		Files:           make(map[string]*FileInfo),
-		Symbols:         make(map[string]*Symbol),
-		ExportedSymbols: make(map[string]*Symbol),
-		References:      make(map[string][]*Reference),
-		Imports:         make(map[string]string),
+		Name:       pkgName,
+		Path:       basePath,
+		Files:      make(map[string]*FileInfo),
+		Symbols:    make(map[string]*Symbol),
+		References: make(map[string][]*Reference),
+		Imports:    make(map[string]string),
 	}
 
 	// Analyze each file
@@ -447,14 +445,6 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 		// Collect symbols at package level
 		for _, symbol := range fileInfo.Symbols {
 			packageInfo.Symbols[symbol.Name] = symbol
-			
-			// Check if symbol is exported (starts with capital letter)
-			if len(symbol.Name) > 0 && symbol.Name[0] >= 'A' && symbol.Name[0] <= 'Z' {
-				packageInfo.ExportedSymbols[symbol.Name] = symbol
-				fmt.Printf("Added exported symbol: %s (%s) from %s:%d (isStdLib=%t)\n", symbol.Name, symbol.Type, symbol.File, symbol.Line, symbol.IsStdLib)
-			} else {
-				fmt.Printf("Added symbol: %s (%s) from %s:%d (isStdLib=%t)\n", symbol.Name, symbol.Type, symbol.File, symbol.Line, symbol.IsStdLib)
-			}
 			
 			// Debug logging for Buffer symbol specifically
 		}
@@ -541,15 +531,8 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 				// Try to create target symbol information from the type checker
 				if targetSymbol := a.createSymbolFromObjectWithBase(obj, "", a.fset.Position(obj.Pos()), basePath); targetSymbol != nil {
 					ref.Target = targetSymbol
-					
-					
 					fmt.Printf("Found reference with target: %s -> %s:%d (%s)\n", 
 						node.Name, targetSymbol.File, targetSymbol.Line, targetSymbol.Package)
-					
-					// Add standard library symbols to the main symbols collection so frontend can access them
-					if targetSymbol.IsStdLib {
-						fileInfo.Symbols[targetSymbol.Name] = targetSymbol
-					}
 				} else {
 					fmt.Printf("Found reference without target: %s at %s:%d\n", node.Name, relPath, pos.Line)
 				}
@@ -575,11 +558,6 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 					ref.Target = targetSymbol
 					fmt.Printf("Found selector reference with target: %s -> %s:%d (%s)\n", 
 						node.Sel.Name, targetSymbol.File, targetSymbol.Line, targetSymbol.Package)
-					
-					// Add standard library symbols to the main symbols collection so frontend can access them
-					if targetSymbol.IsStdLib {
-						fileInfo.Symbols[targetSymbol.Name] = targetSymbol
-					}
 				} else {
 					fmt.Printf("Found selector reference without target: %s at %s:%d\n", node.Sel.Name, relPath, pos.Line)
 				}
@@ -602,11 +580,6 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 							ref.Target = targetSymbol
 							fmt.Printf("Found selector type reference with target: %s -> %s:%d (%s)\n", 
 								node.Sel.Name, targetSymbol.File, targetSymbol.Line, targetSymbol.Package)
-							
-							// Add standard library symbols to the main symbols collection so frontend can access them
-							if targetSymbol.IsStdLib {
-								fileInfo.Symbols[targetSymbol.Name] = targetSymbol
-							}
 						} else {
 							fmt.Printf("Found selector type reference without target: %s at %s:%d\n", node.Sel.Name, relPath, pos.Line)
 						}
