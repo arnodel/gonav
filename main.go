@@ -242,6 +242,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 			len(analyzerFileInfo.Symbols), len(analyzerFileInfo.References))
 		
 		// Convert analyzer format to frontend-expected format
+		
 		frontendFileInfo := map[string]interface{}{
 			"source": analyzerFileInfo.Source,
 			"symbols": make(map[string]interface{}),
@@ -259,19 +260,6 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		
-		// Also include cross-package symbols that might be referenced in this file
-		for _, ref := range analyzerFileInfo.References {
-			if ref.Target != nil {
-				// Add the target symbol to the symbols map so it can be navigated to
-				frontendFileInfo["symbols"].(map[string]interface{})[ref.Target.Name] = map[string]interface{}{
-					"name": ref.Target.Name,
-					"type": ref.Target.Type,
-					"file": ref.Target.File,
-					"line": ref.Target.Line,
-					"package": ref.Target.Package,
-				}
-			}
-		}
 		
 		fmt.Printf("Converted to frontend format with %d symbols\n", 
 			len(frontendFileInfo["symbols"].(map[string]interface{})))

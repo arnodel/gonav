@@ -278,12 +278,9 @@ func (a *PackageAnalyzer) AnalyzePackage(repoPath, packagePath string) (*Package
 		absolutePackagePath = filepath.Join(repoPath, packagePath)
 	}
 
-	// Check if already analyzed and cached
+	// Cache disabled for debugging - analyze fresh each time
 	cacheKey := fmt.Sprintf("%s::%s", repoPath, packagePath)
-	if pkg, exists := a.packages[cacheKey]; exists {
-		fmt.Printf("Returning cached analysis for package %s\n", packagePath)
-		return pkg, nil
-	}
+	delete(a.packages, cacheKey) // Force fresh analysis
 
 	// Parse all Go files in this specific package
 	fileFilter := func(info os.FileInfo) bool {
@@ -460,9 +457,6 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 			}
 			
 			// Debug logging for Buffer symbol specifically
-			if symbol.Name == "Buffer" {
-				fmt.Printf("*** BUFFER SYMBOL IN FINAL COLLECTION: file=%s line=%d pkg=%s isStdLib=%t\n", symbol.File, symbol.Line, symbol.Package, symbol.IsStdLib)
-			}
 		}
 
 		// Collect references at package level
@@ -476,8 +470,8 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 		fmt.Printf("File %s has %d symbols and %d references\n", relPath, len(fileInfo.Symbols), len(fileInfo.References))
 	}
 
-	// Resolve cross-references
-	a.resolveReferences(packageInfo, info)
+	// Resolve only external references that don't have valid targets yet
+	a.resolveExternalReferences(packageInfo, info)
 
 	a.packages[pkgName] = packageInfo
 	return packageInfo, nil
@@ -531,9 +525,6 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 				if symbol != nil {
 					fileInfo.Symbols[symbol.Name] = symbol
 					fmt.Printf("Found definition: %s at %s:%d (isStdLib=%t) pkg=%s\n", symbol.Name, relPath, pos.Line, symbol.IsStdLib, symbol.Package)
-					if symbol.Name == "Buffer" {
-						fmt.Printf("*** BUFFER SYMBOL ADDED TO COLLECTION: file=%s line=%d pkg=%s isStdLib=%t\n", symbol.File, symbol.Line, symbol.Package, symbol.IsStdLib)
-					}
 				}
 			}
 
@@ -546,17 +537,18 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 					Column: pos.Column,
 				}
 				
+				
 				// Try to create target symbol information from the type checker
 				if targetSymbol := a.createSymbolFromObjectWithBase(obj, "", a.fset.Position(obj.Pos()), basePath); targetSymbol != nil {
 					ref.Target = targetSymbol
+					
+					
 					fmt.Printf("Found reference with target: %s -> %s:%d (%s)\n", 
 						node.Name, targetSymbol.File, targetSymbol.Line, targetSymbol.Package)
 					
 					// Add standard library symbols to the main symbols collection so frontend can access them
 					if targetSymbol.IsStdLib {
 						fileInfo.Symbols[targetSymbol.Name] = targetSymbol
-						fmt.Printf("*** ADDED STDLIB TARGET TO SYMBOLS: %s from package %s (isStdLib=%t)\n", 
-							targetSymbol.Name, targetSymbol.Package, targetSymbol.IsStdLib)
 					}
 				} else {
 					fmt.Printf("Found reference without target: %s at %s:%d\n", node.Name, relPath, pos.Line)
@@ -587,8 +579,6 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 					// Add standard library symbols to the main symbols collection so frontend can access them
 					if targetSymbol.IsStdLib {
 						fileInfo.Symbols[targetSymbol.Name] = targetSymbol
-						fmt.Printf("*** ADDED STDLIB TARGET TO SYMBOLS: %s from package %s (isStdLib=%t)\n", 
-							targetSymbol.Name, targetSymbol.Package, targetSymbol.IsStdLib)
 					}
 				} else {
 					fmt.Printf("Found selector reference without target: %s at %s:%d\n", node.Sel.Name, relPath, pos.Line)
@@ -616,8 +606,6 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 							// Add standard library symbols to the main symbols collection so frontend can access them
 							if targetSymbol.IsStdLib {
 								fileInfo.Symbols[targetSymbol.Name] = targetSymbol
-								fmt.Printf("*** ADDED STDLIB TARGET TO SYMBOLS: %s from package %s (isStdLib=%t)\n", 
-									targetSymbol.Name, targetSymbol.Package, targetSymbol.IsStdLib)
 							}
 						} else {
 							fmt.Printf("Found selector type reference without target: %s at %s:%d\n", node.Sel.Name, relPath, pos.Line)
@@ -650,7 +638,12 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 							isExternal := moduleInfo.IsExternalImport(importPath)
 							isStdLib := IsStandardLibraryImport(importPath)
 							
-							// Create external reference
+							// Create reference (external or internal)
+							refType := "internal"
+							if isExternal {
+								refType = "external"
+							}
+							
 							ref := &Reference{
 								Name:   node.Sel.Name,
 								File:   relPath,
@@ -658,7 +651,7 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 								Column: pos.Column,
 								Target: &Symbol{
 									Name:       node.Sel.Name,
-									Type:       "external",
+									Type:       refType,
 									File:       "", // Will be resolved later
 									Line:       0,  // Will be resolved later
 									Column:     0,  // Will be resolved later
@@ -714,7 +707,12 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 							isExternal := moduleInfo.IsExternalImport(importPath)
 							isStdLib := IsStandardLibraryImport(importPath)
 							
-							// Create external reference for the type name in composite literal
+							// Create reference for the type name in composite literal
+							refType := "internal"
+							if isExternal {
+								refType = "external"
+							}
+							
 							ref := &Reference{
 								Name:   selectorType.Sel.Name,
 								File:   relPath,
@@ -722,7 +720,7 @@ func (a *PackageAnalyzer) analyzeFile(file *ast.File, relPath string, info *type
 								Column: pos.Column,
 								Target: &Symbol{
 									Name:       selectorType.Sel.Name,
-									Type:       "external",
+									Type:       refType,
 									File:       "", // Will be resolved later
 									Line:       0,  // Will be resolved later
 									Column:     0,  // Will be resolved later
@@ -760,6 +758,7 @@ func (a *PackageAnalyzer) createSymbolFromObjectWithBase(obj types.Object, file 
 	if obj == nil {
 		return nil
 	}
+	
 	
 	// If file is empty, we need to determine it from the object's position
 	targetFile := file
@@ -800,7 +799,6 @@ func (a *PackageAnalyzer) createSymbolFromObjectWithBase(obj types.Object, file 
 	
 	// Debug logging for standard library symbols
 	if isStdLib {
-		fmt.Printf("DEBUG: Created stdlib symbol: %s from package %s (isStdLib=%t)\n", obj.Name(), packageName, isStdLib)
 	}
 
 	switch o := obj.(type) {
@@ -862,7 +860,6 @@ func (a *PackageAnalyzer) createSymbolFromObject(obj types.Object, file string, 
 	
 	// Debug logging for standard library symbols
 	if isStdLib {
-		fmt.Printf("DEBUG: Created stdlib symbol: %s from package %s (isStdLib=%t)\n", obj.Name(), packageName, isStdLib)
 	}
 
 	switch o := obj.(type) {
@@ -898,6 +895,21 @@ func (a *PackageAnalyzer) resolveReferences(pkgInfo *PackageInfo, info *types.In
 			if target, exists := pkgInfo.Symbols[ref.Name]; exists {
 				ref.Target = target
 				fmt.Printf("Resolved reference %s -> %s:%d\n", ref.Name, target.File, target.Line)
+			}
+		}
+	}
+}
+
+func (a *PackageAnalyzer) resolveExternalReferences(pkgInfo *PackageInfo, info *types.Info) {
+	for _, fileInfo := range pkgInfo.Files {
+		for _, ref := range fileInfo.References {
+			// Only resolve references that don't have valid targets
+			// This preserves correct local variable targets while fixing unresolved ones
+			if ref.Target == nil || ref.Target.File == "" || ref.Target.Line == 0 {
+				// Try to find the target symbol in package symbols
+				if target, exists := pkgInfo.Symbols[ref.Name]; exists {
+					ref.Target = target
+				}
 			}
 		}
 	}

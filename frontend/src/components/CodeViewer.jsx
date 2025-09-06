@@ -27,6 +27,89 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
     )
   }
 
+  const handleSymbolClickWithReference = async (reference) => {
+    console.log('Symbol clicked via reference:', reference)
+    
+    if (reference && reference.target) {
+      // Check if this is a builtin symbol
+      if (reference.target.package === 'builtin') {
+        alert(`'${reference.name}' is a Go builtin type/function. Cannot navigate to builtin source.`)
+        return
+      }
+      
+      // Check if this is a standard library symbol
+      if (reference.target.isStdLib) {
+        alert(`'${reference.name}' is a Go standard library symbol from package '${reference.target.package}'. Cannot navigate to standard library source.`)
+        return
+      }
+      
+      // Handle external references (cross-repository)
+      if (reference.target.type === 'external' && reference.target.isExternal) {
+        const modulePath = reference.target.importPath || reference.target.package
+        const version = reference.target.version || 'latest'
+        const moduleAtVersion = `${modulePath}@${version}`
+        
+        console.log(`Cross-repository reference: ${reference.name} in ${moduleAtVersion}`)
+        
+        // Extract package path from the import path
+        let packagePath = ''
+        if (modulePath.includes('/')) {
+          const parts = modulePath.split('/')
+          if (parts.length > 3) {
+            packagePath = parts.slice(3).join('/')
+          }
+        }
+        
+        console.log(`About to call onNavigateToSymbol with packagePath: '${packagePath}', symbol: '${reference.name}', moduleAtVersion: '${moduleAtVersion}'`)
+        onNavigateToSymbol(packagePath, reference.name, moduleAtVersion, reference.line)
+        return
+      }
+      
+      // Handle external references (cross-repository) that need to be resolved first
+      if (reference.target.type === 'external' && (!reference.target.file || reference.target.line === 0)) {
+        console.log('External reference needs resolution:', reference.name, 'from', reference.target.importPath)
+        alert(`External reference to '${reference.name}' from ${reference.target.importPath || reference.target.package}. Cross-repository navigation not yet implemented.`)
+        return
+      }
+      
+      // Handle internal references that need cross-package resolution
+      if (reference.target.type === 'internal' && (!reference.target.file || reference.target.line === 0)) {
+        console.log('Internal cross-package reference needs resolution:', reference.name, 'from', reference.target.package)
+        // Try to use onNavigateToSymbol for internal cross-package navigation
+        if (onNavigateToSymbol && reference.target.package) {
+          // Extract package path from the import path (e.g., "github.com/arnodel/golua/runtime" -> "runtime")
+          const packageParts = reference.target.package.split('/')
+          const packagePath = packageParts[packageParts.length - 1]
+          console.log('Attempting internal cross-package navigation to:', packagePath, reference.name)
+          onNavigateToSymbol(packagePath, reference.name, null, reference.line)
+          return
+        }
+        alert(`Internal reference to '${reference.name}' from package '${reference.target.package}'. Cross-package navigation needs implementation.`)
+        return
+      }
+      
+      // Handle same-repository references (including cross-package within same repo)
+      const currentPackagePath = file.includes('/') ? file.substring(0, file.lastIndexOf('/')) : ''
+      const targetFile = reference.target.file
+      const targetPackagePath = targetFile.includes('/') ? targetFile.substring(0, targetFile.lastIndexOf('/')) : ''
+      
+      // Cross-package navigation within same repository
+      if (targetPackagePath !== currentPackagePath && targetPackagePath && onNavigateToSymbol) {
+        console.log('Cross-package navigation to:', targetPackagePath, reference.name)
+        onNavigateToSymbol(targetPackagePath, reference.name, null, reference.line)
+        return
+      }
+      
+      // Same package navigation (including same file)
+      console.log('Same package navigation to:', reference.target.file, 'line:', reference.target.line)
+      onSymbolClick(reference.target.file, reference.target.line)
+      return
+    }
+    
+    // Fallback: no target information
+    console.log('No target information for reference:', reference)
+  }
+
   const handleSymbolClick = async (symbol, clickLine = null, clickColumn = null) => {
     console.log('Symbol clicked:', symbol, 'at line:', clickLine, 'column:', clickColumn)
     
@@ -76,6 +159,29 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
           return
         }
         
+        // Handle external references (cross-repository) that need to be resolved first
+        if (reference.target.type === 'external' && (!reference.target.file || reference.target.line === 0)) {
+          console.log('External reference needs resolution:', symbol, 'from', reference.target.importPath)
+          alert(`External reference to '${symbol}' from ${reference.target.importPath || reference.target.package}. Cross-repository navigation not yet implemented.`)
+          return
+        }
+        
+        // Handle internal references that need cross-package resolution
+        if (reference.target.type === 'internal' && (!reference.target.file || reference.target.line === 0)) {
+          console.log('Internal cross-package reference needs resolution:', symbol, 'from', reference.target.package)
+          // Try to use onNavigateToSymbol for internal cross-package navigation
+          if (onNavigateToSymbol && reference.target.package) {
+            // Extract package path from the import path (e.g., "github.com/arnodel/golua/runtime" -> "runtime")
+            const packageParts = reference.target.package.split('/')
+            const packagePath = packageParts[packageParts.length - 1]
+            console.log('Attempting internal cross-package navigation to:', packagePath, symbol)
+            onNavigateToSymbol(packagePath, symbol, null, clickLine)
+            return
+          }
+          alert(`Internal reference to '${symbol}' from package '${reference.target.package}'. Cross-package navigation needs implementation.`)
+          return
+        }
+        
         // Handle same-repository references (including cross-package within same repo)
         const currentPackagePath = file.includes('/') ? file.substring(0, file.lastIndexOf('/')) : ''
         const targetFile = reference.target.file
@@ -112,7 +218,7 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
     // Create a map of line -> column positions for actual references
     const referenceMap = new Map()
     if (content.references) {
-      content.references.forEach(ref => {
+      content.references.forEach((ref, index) => {
         const key = `${ref.line}`
         if (!referenceMap.has(key)) {
           referenceMap.set(key, [])
@@ -120,7 +226,8 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
         referenceMap.get(key).push({
           column: ref.column,
           name: ref.name,
-          length: ref.name.length
+          length: ref.name.length,
+          originalIndex: index  // Keep track of the original index
         })
       })
     }
@@ -135,7 +242,7 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
         // Sort by column position in reverse order to avoid position shifts during replacement
         const sortedRefs = [...lineRefs].sort((a, b) => b.column - a.column)
         
-        sortedRefs.forEach(ref => {
+        sortedRefs.forEach((ref, index) => {
           // Column positions are typically 1-based, convert to 0-based for JavaScript
           const startPos = ref.column - 1
           const endPos = startPos + ref.length
@@ -154,7 +261,9 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
             if (currentText === ref.name) {
               const before = processedLine.substring(0, currentStartPos)
               const after = processedLine.substring(currentEndPos)
-              processedLine = before + `<span class="symbol" data-symbol="${ref.name}">${ref.name}</span>` + after
+              
+              // Use the original reference index we stored
+              processedLine = before + `<span class="symbol" data-ref-index="${ref.originalIndex}">${ref.name}</span>` + after
             }
           }
         })
@@ -185,25 +294,12 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
           }}
           onClick={(e) => {
             if (e.target.classList.contains('symbol')) {
-              // Find the line number by walking up the DOM to the line div
-              let lineElement = e.target.closest('[data-line]')
-              const clickLine = lineElement ? parseInt(lineElement.dataset.line) : null
-              
-              // Calculate approximate column position from the click
-              const lineContentElement = lineElement?.querySelector('.line-content')
-              let clickColumn = null
-              if (lineContentElement && clickLine) {
-                // Get the position of the symbol within the line content
-                const symbolElement = e.target
-                const lineText = lineContentElement.textContent
-                const symbolText = symbolElement.textContent
-                const symbolStart = lineText.indexOf(symbolText)
-                if (symbolStart !== -1) {
-                  clickColumn = symbolStart + 1 // Convert to 1-based indexing to match server
-                }
+              // Get the reference index directly from the DOM element
+              const refIndex = parseInt(e.target.dataset.refIndex)
+              if (refIndex >= 0 && content.references && content.references[refIndex]) {
+                const reference = content.references[refIndex]
+                handleSymbolClickWithReference(reference)
               }
-              
-              handleSymbolClick(e.target.dataset.symbol, clickLine, clickColumn)
             }
           }}
         />
