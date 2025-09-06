@@ -78,12 +78,25 @@ curl "http://localhost:8080/api/package/github.com%2Farnodel%2Fgolua%40v0.1.0"
   "name": "runtime",
   "path": "/var/folders/.../gonav-cache/github.com_arnodel_golua_v0.1.0",
   "symbols": {
+    "Add": {
+      "name": "Add",
+      "type": "function",
+      "file": "runtime/arith.go",
+      "line": 24,
+      "column": 6,
+      "package": "runtime",
+      "signature": "func(x runtime.Value, y runtime.Value) (runtime.Value, bool)",
+      "isStdLib": true
+    },
     "New": {
-      "name": "New",
-      "type": "func",
+      "name": "New", 
+      "type": "function",
       "file": "runtime/runtime.go",
       "line": 45,
-      "package": "runtime"
+      "column": 6,
+      "package": "runtime",
+      "signature": "func() *runtime.Runtime",
+      "isStdLib": true
     }
   },
   "files": [
@@ -106,8 +119,20 @@ curl "http://localhost:8080/api/package/github.com%2Farnodel%2Fgolua%40v0.1.0"
 **Response Fields:**
 - `name`: Package name
 - `path`: Absolute path to repository on server
-- `symbols`: Map of all symbols defined in this package (public + private). Exported symbols have names starting with uppercase letters.
-- `files`: Array of file objects in this package, each with `path` and `isGo` fields. Use `/file/` endpoint to get detailed analysis of individual files.
+- `symbols`: Map of symbol names to symbol definitions. Contains both exported (uppercase) and unexported (lowercase) symbols. Key = symbol name, Value = symbol object with:
+  - `name`: Symbol identifier
+  - `type`: Symbol type (`function`, `var`, `const`, `type`, etc.)
+  - `file`: Relative file path where symbol is defined
+  - `line`: Line number of definition
+  - `column`: Column position of definition  
+  - `package`: Package name containing the symbol
+  - `signature`: Type signature (for functions, variables, etc.)
+  - `isStdLib`: Boolean indicating if this is a standard library symbol
+- `files`: Array of file objects in this package:
+  - `path`: Relative file path from repository root
+  - `isGo`: Boolean indicating if this is a Go source file
+  
+  Use `/file/` endpoint to get detailed analysis of individual files.
 
 ---
 

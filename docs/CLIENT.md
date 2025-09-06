@@ -299,8 +299,9 @@ packages.set(packageKey, packageInfo)
 1. **Lazy Loading:** Files are only loaded when clicked
 2. **Package Caching:** Avoid re-analyzing the same packages
 3. **Debounced Navigation:** Prevent rapid-fire navigation calls
-4. **Virtual Scrolling:** Handle large files efficiently (future enhancement)
-5. **Worker Threads:** Syntax highlighting in background (future enhancement)
+4. **Streamlined API Responses:** Removed redundant fields (`imports` and `references` from package endpoint, `symbols` from file endpoint) to reduce payload sizes
+5. **Virtual Scrolling:** Handle large files efficiently (future enhancement)
+6. **Worker Threads:** Syntax highlighting in background (future enhancement)
 
 ---
 
