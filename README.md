@@ -33,35 +33,39 @@ A web-based code navigator for Go source code that allows you to browse reposito
    cd ..
    ```
 
-3. **Run the development environment:**
+3. **Start the development servers:**
+
+   You'll need two terminal windows:
+
+   **Terminal 1 - Backend:**
    ```bash
-   ./dev.sh
+   make backend
+   # Or: go run main.go
+   # Server runs on http://localhost:8080
    ```
 
-   This will start:
-   - Go backend server on `http://localhost:8080`
-   - Parcel frontend dev server on `http://localhost:1234`
+   **Terminal 2 - Frontend:**
+   ```bash
+   make frontend
+   # Or: cd frontend && npm run dev
+   # Dev server runs on http://localhost:1234
+   ```
 
 4. **Open your browser:**
    Go to `http://localhost:1234` and try loading a repository like:
    - `github.com/gin-gonic/gin@v1.9.1`
    - `github.com/gorilla/mux@v1.8.0`
 
-### Manual Setup
+### Available Commands
 
-If you prefer to run the servers separately:
+Run `make help` to see all available commands:
 
-**Backend:**
 ```bash
-go run main.go
-# Server runs on http://localhost:8080
-```
-
-**Frontend:**
-```bash
-cd frontend
-npm run dev
-# Dev server runs on http://localhost:1234
+make help      # Show help
+make backend   # Start Go backend server (port 8080)
+make frontend  # Start frontend dev server (port 1234)
+make build     # Build Go binary
+make clean     # Clean build artifacts
 ```
 
 ## Architecture
