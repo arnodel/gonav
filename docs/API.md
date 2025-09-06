@@ -86,19 +86,20 @@ curl "http://localhost:8080/api/package/github.com%2Farnodel%2Fgolua%40v0.1.0"
       "package": "runtime"
     }
   },
-  "files": {
-    "runtime/runtime.go": {
-      "source": "package runtime\n\n...",
-      "symbols": [...],
-      "references": [...]
+  "files": [
+    {
+      "path": "runtime/runtime.go",
+      "isGo": true
+    },
+    {
+      "path": "runtime/arith.go", 
+      "isGo": true
+    },
+    {
+      "path": "runtime/table.go",
+      "isGo": true
     }
-  },
-  "imports": {
-    "fmt": "fmt"
-  },
-  "references": {
-    "New": [...]
-  }
+  ]
 }
 ```
 
@@ -106,9 +107,7 @@ curl "http://localhost:8080/api/package/github.com%2Farnodel%2Fgolua%40v0.1.0"
 - `name`: Package name
 - `path`: Absolute path to repository on server
 - `symbols`: Map of all symbols defined in this package (public + private). Exported symbols have names starting with uppercase letters.
-- `files`: Map of file path to file analysis (same format as `/file` endpoint)
-- `imports`: Map of import aliases to import paths
-- `references`: Map of symbol name to array of references across the package
+- `files`: Array of file objects in this package, each with `path` and `isGo` fields. Use `/file/` endpoint to get detailed analysis of individual files.
 
 ---
 
@@ -271,7 +270,11 @@ Error responses include a plain text error message in the response body.
 
 ## Package vs File Analysis
 
-- **`/package/`**: Analyzes entire Go package (directory), returns all symbols and files
-- **`/file/`**: Analyzes single Go file, returns symbols and references for that file only
+- **`/package/`**: Analyzes entire Go package (directory), returns package-level symbols and file list
+- **`/file/`**: Analyzes single Go file, returns detailed symbols and references for that file
 
-Use `/package/` for cross-package navigation and symbol lookup, `/file/` for displaying individual file content.
+**Usage Pattern:**
+1. Use `/package/` for cross-package navigation and symbol lookup
+2. Use `/file/` for displaying individual file content on-demand
+
+This separation keeps package responses lightweight while providing detailed file analysis when needed.

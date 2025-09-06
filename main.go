@@ -227,22 +227,15 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	fullPath := filepath.Join(repoPath, filePath)
 	fmt.Printf("Attempting to parse file at: '%s'\n", fullPath)
 	
-	// Determine which package this file belongs to
-	packagePath := filepath.Dir(filePath)
-	if packagePath == "." {
-		packagePath = ""
-	}
-
-	// Analyze the package containing this file
-	packageInfo, err := s.analyzer.AnalyzePackage(repoPath, packagePath)
+	// Analyze the specific file
+	analyzerFileInfo, err := s.analyzer.AnalyzeSingleFile(repoPath, filePath)
 	if err != nil {
-		fmt.Printf("Failed to analyze package for file %s: %v\n", filePath, err)
-	} else if analyzerFileInfo, exists := packageInfo.Files[filePath]; exists {
+		fmt.Printf("Failed to analyze file %s: %v\n", filePath, err)
+	} else {
 		fmt.Printf("Returning analyzed file info with %d symbols and %d references\n", 
 			len(analyzerFileInfo.Symbols), len(analyzerFileInfo.References))
 		
 		// Convert analyzer format to frontend-expected format
-		
 		frontendFileInfo := map[string]interface{}{
 			"source": analyzerFileInfo.Source,
 			"symbols": make(map[string]interface{}),
@@ -259,7 +252,6 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 				"package": symbol.Package,
 			}
 		}
-		
 		
 		fmt.Printf("Converted to frontend format with %d symbols\n", 
 			len(frontendFileInfo["symbols"].(map[string]interface{})))

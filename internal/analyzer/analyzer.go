@@ -26,13 +26,17 @@ type PackageDiscovery struct {
 	Files        []string `json:"files"`        // List of Go files in this package
 }
 
+// FileEntry represents a file in the package with metadata
+type FileEntry struct {
+	Path string `json:"path"`
+	IsGo bool   `json:"isGo"`
+}
+
 type PackageInfo struct {
 	Name       string                 `json:"name"`
 	Path       string                 `json:"path"`
-	Files      map[string]*FileInfo   `json:"files"`
+	Files      []FileEntry            `json:"files"`           // List of files in this package with metadata
 	Symbols    map[string]*Symbol     `json:"symbols"`         // All symbols in this package
-	References map[string][]*Reference `json:"references"`      // Symbol -> list of references
-	Imports    map[string]string      `json:"imports"`         // alias -> package path
 }
 
 type FileInfo struct {
@@ -422,10 +426,8 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 	packageInfo := &PackageInfo{
 		Name:       pkgName,
 		Path:       basePath,
-		Files:      make(map[string]*FileInfo),
+		Files:      make([]FileEntry, 0),
 		Symbols:    make(map[string]*Symbol),
-		References: make(map[string][]*Reference),
-		Imports:    make(map[string]string),
 	}
 
 	// Analyze each file
@@ -440,28 +442,21 @@ func (a *PackageAnalyzer) analyzePackage(pkgName string, pkg *ast.Package, baseP
 			continue
 		}
 
-		packageInfo.Files[relPath] = fileInfo
+		// Add file to the files list with metadata
+		packageInfo.Files = append(packageInfo.Files, FileEntry{
+			Path: relPath,
+			IsGo: strings.HasSuffix(relPath, ".go"),
+		})
 
 		// Collect symbols at package level
 		for _, symbol := range fileInfo.Symbols {
 			packageInfo.Symbols[symbol.Name] = symbol
-			
-			// Debug logging for Buffer symbol specifically
-		}
-
-		// Collect references at package level
-		for _, ref := range fileInfo.References {
-			if packageInfo.References[ref.Name] == nil {
-				packageInfo.References[ref.Name] = make([]*Reference, 0)
-			}
-			packageInfo.References[ref.Name] = append(packageInfo.References[ref.Name], ref)
 		}
 		
 		fmt.Printf("File %s has %d symbols and %d references\n", relPath, len(fileInfo.Symbols), len(fileInfo.References))
 	}
 
-	// Resolve only external references that don't have valid targets yet
-	a.resolveExternalReferences(packageInfo, info)
+	// Reference resolution no longer needed - handled during file analysis
 
 	a.packages[pkgName] = packageInfo
 	return packageInfo, nil
@@ -859,72 +854,103 @@ func (a *PackageAnalyzer) createSymbolFromObject(obj types.Object, file string, 
 	return symbol
 }
 
-func (a *PackageAnalyzer) resolveReferences(pkgInfo *PackageInfo, info *types.Info) {
-	fmt.Printf("Resolving cross-references for package: %s\n", pkgInfo.Name)
+// resolveReferences function removed - no longer needed since Files field changed to []string
 
-	for _, fileInfo := range pkgInfo.Files {
-		for _, ref := range fileInfo.References {
-			// Try to find the target symbol
-			if target, exists := pkgInfo.Symbols[ref.Name]; exists {
-				ref.Target = target
-				fmt.Printf("Resolved reference %s -> %s:%d\n", ref.Name, target.File, target.Line)
-			}
+// resolveExternalReferences function removed - no longer needed since Files field changed to []string
+
+// resolveCrossPackageReferences function removed - no longer needed since Files field changed to []string
+
+// AnalyzeSingleFile analyzes a single file and returns detailed file information
+func (a *PackageAnalyzer) AnalyzeSingleFile(repoPath, filePath string) (*FileInfo, error) {
+	// Parse module information
+	moduleInfo, err := a.ParseModuleInfo(repoPath)
+	if err != nil {
+		fmt.Printf("Warning: failed to parse module info: %v\n", err)
+		moduleInfo = &ModuleInfo{
+			ModulePath:   "",
+			Dependencies: make(map[string]string),
+			Replaces:     make(map[string]string),
 		}
 	}
-}
 
-func (a *PackageAnalyzer) resolveExternalReferences(pkgInfo *PackageInfo, info *types.Info) {
-	for _, fileInfo := range pkgInfo.Files {
-		for _, ref := range fileInfo.References {
-			// Only resolve references that don't have valid targets
-			// This preserves correct local variable targets while fixing unresolved ones
-			if ref.Target == nil || ref.Target.File == "" || ref.Target.Line == 0 {
-				// Try to find the target symbol in package symbols
-				if target, exists := pkgInfo.Symbols[ref.Name]; exists {
-					ref.Target = target
-				}
-			}
+	// We'll find the target file from the package parsing below
+
+	// We need type information, so parse the entire package
+	packagePath := filepath.Dir(filePath)
+	if packagePath == "." {
+		packagePath = ""
+	}
+	
+	// Get the absolute package path
+	var absolutePackagePath string
+	if packagePath == "" {
+		absolutePackagePath = repoPath
+	} else {
+		absolutePackagePath = filepath.Join(repoPath, packagePath)
+	}
+
+	// Parse all Go files in the package for type checking
+	fileFilter := func(info os.FileInfo) bool {
+		name := info.Name()
+		return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
+	}
+
+	pkgs, err := parser.ParseDir(a.fset, absolutePackagePath, fileFilter, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse package directory %s: %w", absolutePackagePath, err)
+	}
+
+	// Find the main package
+	var astPackage *ast.Package
+	for _, pkg := range pkgs {
+		astPackage = pkg
+		break
+	}
+
+	if astPackage == nil {
+		return nil, fmt.Errorf("no package found in %s", absolutePackagePath)
+	}
+
+	// Prepare for type checking
+	config := &types.Config{
+		Importer: importer.Default(),
+		Error: func(err error) {
+			// Ignore errors for now
+			fmt.Printf("Type checker error: %v\n", err)
+		},
+	}
+
+	// Convert ast.Package to []*ast.File for type checker and find our target file
+	files := make([]*ast.File, 0, len(astPackage.Files))
+	var targetFile *ast.File
+	
+	for fPath, f := range astPackage.Files {
+		files = append(files, f)
+		// Find the file that matches our target filePath
+		if strings.HasSuffix(fPath, filePath) {
+			targetFile = f
 		}
 	}
-}
 
-func (a *PackageAnalyzer) resolveCrossPackageReferences(combinedPackage *PackageInfo) {
-	fmt.Printf("Resolving cross-package references\n")
-
-	for _, fileInfo := range combinedPackage.Files {
-		for _, ref := range fileInfo.References {
-			if ref.Target == nil {
-				// Try to find the target in the combined symbol table
-				if target, exists := combinedPackage.Symbols[ref.Name]; exists {
-					ref.Target = target
-					fmt.Printf("Resolved cross-package reference %s -> %s:%d (%s)\n", 
-						ref.Name, target.File, target.Line, target.Package)
-				} else {
-					// Try with package prefix
-					for symbolKey, target := range combinedPackage.Symbols {
-						if strings.HasSuffix(symbolKey, "."+ref.Name) {
-							ref.Target = target
-							fmt.Printf("Resolved prefixed reference %s -> %s:%d (%s)\n", 
-								ref.Name, target.File, target.Line, target.Package)
-							break
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-func (a *PackageAnalyzer) GetFileInfo(packageName, filePath string) (*FileInfo, error) {
-	pkg, exists := a.packages[packageName]
-	if !exists {
-		return nil, fmt.Errorf("package not found: %s", packageName)
+	if targetFile == nil {
+		return nil, fmt.Errorf("target file not found in package: %s", filePath)
 	}
 
-	fileInfo, exists := pkg.Files[filePath]
-	if !exists {
-		return nil, fmt.Errorf("file not found: %s in package %s", filePath, packageName)
+	// Type check the package
+	info := &types.Info{
+		Defs:  make(map[*ast.Ident]types.Object),
+		Uses:  make(map[*ast.Ident]types.Object),
+		Types: make(map[ast.Expr]types.TypeAndValue),
 	}
 
-	return fileInfo, nil
+	typesPackage, err := config.Check(targetFile.Name.Name, a.fset, files, info)
+	if err != nil {
+		fmt.Printf("Type checking failed (continuing anyway): %v\n", err)
+	}
+
+	// Convert relative path
+	relPath := filepath.ToSlash(filePath)
+	
+	// Analyze the specific file using the AST file from the package parsing
+	return a.analyzeFile(targetFile, relPath, info, typesPackage, repoPath, moduleInfo)
 }
