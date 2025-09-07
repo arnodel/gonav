@@ -22,46 +22,34 @@ import (
 type Server struct {
 	repoManager   *repo.Manager
 	analyzer      *analyzer.PackageAnalyzer
-	usePackages   bool // Whether enhanced packages mode is enabled
 	// Cache for package discoveries per repository
 	discoveryCache map[string]map[string]*analyzer.PackageDiscovery
 }
 
-func NewServer(repoManager *repo.Manager, usePackages bool) *Server {
-	var analyzerInstance *analyzer.PackageAnalyzer
-	if usePackages {
-		// Create enhanced analyzer with packages support
-		analyzerInstance = analyzer.New()
-		fmt.Println("Enhanced analyzer with golang.org/x/tools/go/packages enabled")
-	} else {
-		// Use standard analyzer
-		analyzerInstance = analyzer.New()
-	}
+func NewServer(repoManager *repo.Manager) *Server {
+	// Always use enhanced analyzer with packages support
+	analyzerInstance := analyzer.New()
+	fmt.Println("Enhanced analyzer with golang.org/x/tools/go/packages enabled")
 	
 	return &Server{
 		repoManager:    repoManager,
 		analyzer:       analyzerInstance,
-		usePackages:    usePackages,
 		discoveryCache: make(map[string]map[string]*analyzer.PackageDiscovery),
 	}
 }
 
 // configureAnalyzerForRepository configures the analyzer with repository context for enhanced analysis
 func (s *Server) configureAnalyzerForRepository(repoPath string) {
-	if s.usePackages {
-		// Get environment from repository manager if it's using isolation
-		var env []string
-		if s.repoManager.IsIsolated() {
-			isolatedEnv := s.repoManager.GetIsolatedEnv()
-			if isolatedEnv != nil {
-				env = isolatedEnv.Environment()
-			}
-		}
-		
-		// Configure packages analyzer with repository context
-		s.analyzer.WithPackagesSupport(repoPath, env)
-		fmt.Printf("Configured enhanced analyzer for repository at %s\n", repoPath)
+	// Get environment from repository manager (always using isolation)
+	var env []string
+	isolatedEnv := s.repoManager.GetIsolatedEnv()
+	if isolatedEnv != nil {
+		env = isolatedEnv.Environment()
 	}
+	
+	// Configure analyzer with repository context
+	s.analyzer.SetRepositoryContext(repoPath, env)
+	fmt.Printf("Configured enhanced analyzer for repository at %s\n", repoPath)
 }
 
 func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
@@ -342,37 +330,25 @@ func (s *Server) setupRoutes() *http.ServeMux {
 }
 
 func main() {
-	// Parse command line flags
-	isolated := flag.Bool("isolated", false, "Use isolated Go environment for module downloads")
-	usePackages := flag.Bool("packages", false, "Use golang.org/x/tools/go/packages for enhanced analysis")
+	// Parse command line flags (no custom flags, but this handles --help)
 	flag.Parse()
 
-	// Create repository manager with optional isolation
-	var repoManager *repo.Manager
-	var err error
-	
-	if *isolated {
-		repoManager, err = repo.NewManager(repo.WithIsolation(true))
-		if err != nil {
-			log.Fatal("Failed to create isolated repository manager:", err)
-		}
-		fmt.Println("Running with isolated Go environment")
-		
-		// Ensure cleanup on exit
-		defer func() {
-			fmt.Println("Cleaning up isolated environment...")
-			if err := repoManager.Cleanup(); err != nil {
-				fmt.Printf("Warning: failed to cleanup isolated environment: %v\n", err)
-			}
-		}()
-	} else {
-		repoManager, err = repo.NewManager()
-		if err != nil {
-			log.Fatal("Failed to create repository manager:", err)
-		}
+	// Create repository manager with isolated environment (always enabled)
+	repoManager, err := repo.NewManager(repo.WithIsolation(true))
+	if err != nil {
+		log.Fatal("Failed to create isolated repository manager:", err)
 	}
+	fmt.Println("Running with isolated Go environment")
+	
+	// Ensure cleanup on exit
+	defer func() {
+		fmt.Println("Cleaning up isolated environment...")
+		if err := repoManager.Cleanup(); err != nil {
+			fmt.Printf("Warning: failed to cleanup isolated environment: %v\n", err)
+		}
+	}()
 
-	server := NewServer(repoManager, *usePackages)
+	server := NewServer(repoManager)
 	mux := server.setupRoutes()
 
 	port := os.Getenv("PORT")
@@ -394,12 +370,8 @@ func main() {
 		fmt.Printf("Server starting on port %s\n", port)
 		fmt.Printf("Frontend will be served from: frontend/dist\n")
 		fmt.Printf("API available at: /api/repo/{module@version} and /api/file/{module@version}/{path}\n")
-		if *isolated {
-			fmt.Printf("Running in isolated mode\n")
-		}
-		if *usePackages {
-			fmt.Printf("Running with enhanced golang.org/x/tools/go/packages analysis\n")
-		}
+		fmt.Printf("Running in isolated mode\n")
+		fmt.Printf("Running with enhanced golang.org/x/tools/go/packages analysis\n")
 		
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal("Server failed to start:", err)

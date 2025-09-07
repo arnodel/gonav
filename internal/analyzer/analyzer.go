@@ -19,8 +19,7 @@ type PackageAnalyzer struct {
 	fset           *token.FileSet
 	packages       map[string]*PackageInfo
 	stdLibCache    map[string]bool // Cache for standard library detection
-	usePackages    bool           // Whether to use golang.org/x/tools/go/packages
-	packagesAnalyzer *PackagesAnalyzer // Optional packages-based analyzer
+	packagesAnalyzer *PackagesAnalyzer // Enhanced analyzer using golang.org/x/tools/go/packages
 }
 
 type PackageDiscovery struct {
@@ -127,13 +126,12 @@ func New() *PackageAnalyzer {
 		fset:        token.NewFileSet(),
 		packages:    make(map[string]*PackageInfo),
 		stdLibCache: make(map[string]bool),
-		usePackages: false, // Disabled by default for backward compatibility
+		// packagesAnalyzer will be configured when repository context is available
 	}
 }
 
-// WithPackagesSupport enables golang.org/x/tools/go/packages for enhanced analysis
-func (a *PackageAnalyzer) WithPackagesSupport(repoPath string, env []string) *PackageAnalyzer {
-	a.usePackages = true
+// SetRepositoryContext configures the analyzer with repository context for enhanced analysis
+func (a *PackageAnalyzer) SetRepositoryContext(repoPath string, env []string) *PackageAnalyzer {
 	a.packagesAnalyzer = NewPackagesAnalyzer(repoPath, env)
 	return a
 }
@@ -373,8 +371,8 @@ func (a *PackageAnalyzer) findFilesInPackage(packageDir string) ([]string, error
 func (a *PackageAnalyzer) AnalyzePackage(repoPath, packagePath string) (*PackageInfo, error) {
 	fmt.Printf("Analyzing package: %s in %s\n", packagePath, repoPath)
 
-	// Use packages analyzer if enabled
-	if a.usePackages && a.packagesAnalyzer != nil {
+	// Use packages analyzer if available
+	if a.packagesAnalyzer != nil {
 		fmt.Printf("Using golang.org/x/tools/go/packages for analysis\n")
 		
 		// Parse module information for context
@@ -1254,8 +1252,8 @@ func (a *PackageAnalyzer) createSymbolFromObject(obj types.Object, file string, 
 
 // AnalyzeSingleFile analyzes a single file and returns detailed file information
 func (a *PackageAnalyzer) AnalyzeSingleFile(repoPath, filePath string) (*FileInfo, error) {
-	// Use packages analyzer if enabled
-	if a.usePackages && a.packagesAnalyzer != nil {
+	// Use packages analyzer if available
+	if a.packagesAnalyzer != nil {
 		fmt.Printf("Using golang.org/x/tools/go/packages for file analysis\n")
 		
 		// Parse module information for context

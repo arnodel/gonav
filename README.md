@@ -8,7 +8,10 @@ A web-based code navigator for Go source code that allows you to browse reposito
 - Browse file structure of Go packages
 - View source code with clickable symbols
 - Navigate to symbol definitions within the same repository
-- Cross-repository navigation (planned)
+- **Cross-repository navigation** - Navigate to external modules and dependencies
+- **Enhanced analysis** using `golang.org/x/tools/go/packages` for accurate type information
+- **Isolated environments** to prevent dependency conflicts
+- **Standard library detection** with proper classification
 
 ## Quick Start
 
@@ -70,8 +73,8 @@ make clean     # Clean build artifacts
 
 ## Architecture
 
-- **Backend (Go)**: REST API that clones repositories and parses Go source using `go/ast`
-- **Frontend (React)**: Web interface for browsing and navigating code
+- **Backend (Go)**: REST API that clones repositories in isolated environments and parses Go source using `golang.org/x/tools/go/packages` for enhanced analysis
+- **Frontend (React)**: Web interface for browsing and navigating code with cross-repository support
 - **Bundler (Parcel)**: Zero-config frontend build tool
 
 ## API Endpoints
@@ -82,24 +85,25 @@ make clean     # Clean build artifacts
 ## How It Works
 
 1. Enter a Go module with version (e.g., `github.com/gin-gonic/gin@v1.9.1`)
-2. Backend clones the repository to a temporary directory
-3. Frontend displays the file tree
-4. Click on files to view syntax-highlighted source code
-5. Click on symbols to navigate to their definitions
+2. Backend clones the repository to an isolated directory to avoid dependency conflicts
+3. Enhanced analysis using `golang.org/x/tools/go/packages` provides accurate type information
+4. Frontend displays the file tree with full navigation support
+5. Click on files to view syntax-highlighted source code
+6. Click on symbols to navigate to their definitions (same-repo or cross-repository)
 
-## Current Limitations
+## Advanced Features
 
-- Only supports GitHub repositories
-- Cross-repository navigation not yet implemented
-- Basic symbol resolution (same file only)
-- No semantic analysis or type information
+- **Isolated Environments**: Each repository is analyzed in its own Go module cache to prevent conflicts
+- **Enhanced Analysis**: Uses `golang.org/x/tools/go/packages` for precise symbol resolution
+- **Cross-Repository Navigation**: Click on external dependencies to navigate to their source code
+- **Standard Library Support**: Proper detection and handling of Go standard library symbols
+- **Module Resolution**: Automatic resolution of module@version references for external navigation
 
 ## Next Steps
 
 - [ ] Add support for GitLab, Bitbucket, and other Git hosts
-- [ ] Implement cross-repository navigation using go.mod
-- [ ] Add more sophisticated symbol resolution
-- [ ] Implement search functionality
-- [ ] Add syntax highlighting with Prism.js
-- [ ] Support for viewing documentation
+- [ ] Implement search functionality across repositories
+- [ ] Add syntax highlighting with Prism.js  
+- [ ] Support for viewing documentation and comments
 - [ ] Performance improvements for large repositories
+- [ ] Caching and persistence for analyzed repositories

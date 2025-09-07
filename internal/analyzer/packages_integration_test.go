@@ -119,7 +119,7 @@ go 1.21
 
 	// Packages analyzer
 	packagesAnalyzer := New()
-	packagesAnalyzer.WithPackagesSupport(tempDir, nil)
+	packagesAnalyzer.SetRepositoryContext(tempDir, nil)
 	packagesPackageInfo, err := packagesAnalyzer.AnalyzePackage(tempDir, "")
 	require.NoError(t, err)
 

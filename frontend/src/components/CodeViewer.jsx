@@ -141,6 +141,26 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
           } else {
             console.log('Definition not found for local reference:', reference.definitionId)
           }
+        } else if (reference.target?.isExternal && reference.target?.package && reference.target.package.includes('@')) {
+          // External reference (cross-repository) - check this BEFORE internal type check
+          const modulePath = reference.target.importPath || reference.target.package
+          const version = reference.target.version || 'latest'
+          const moduleAtVersion = `${modulePath}@${version}`
+          
+          console.log(`External cross-repository reference: ${symbol} in ${moduleAtVersion}`)
+          
+          // Extract package path from the import path
+          let packagePath = ''
+          if (modulePath.includes('/')) {
+            const parts = modulePath.split('/')
+            if (parts.length > 3) {
+              packagePath = parts.slice(3).join('/')
+            }
+          }
+          
+          console.log(`Cross-repository navigation to: packagePath='${packagePath}', symbol='${symbol}', moduleAtVersion='${moduleAtVersion}'`)
+          onNavigateToSymbol(packagePath, symbol, moduleAtVersion, clickLine)
+          return
         } else if (reference.type === 'internal') {
           // Internal reference - use existing cross-package navigation with reference.target
           if (reference.target && reference.target.file && reference.target.line > 0) {
