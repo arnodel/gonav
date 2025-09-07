@@ -303,7 +303,7 @@ func (pa *PackagesAnalyzer) convertObjectToSymbol(obj types.Object, pkg *package
 	
 	// For external references, we need to convert cache paths to module@version format
 	isExternal := obj.Pkg() != nil && obj.Pkg().Path() != pkg.PkgPath
-	isStdLib := IsStandardLibraryImport(importPath)
+	isStdLib := pa.isStandardLibraryImport(importPath)
 	
 	symbol := &Symbol{
 		Name:       obj.Name(),
@@ -367,6 +367,37 @@ func (pa *PackagesAnalyzer) isExternal(obj types.Object, pkg *packages.Package) 
 		return false
 	}
 	return obj.Pkg().Path() != pkg.PkgPath
+}
+
+// isStandardLibraryImport determines if an import path is from the Go standard library
+// using module context for better accuracy
+func (pa *PackagesAnalyzer) isStandardLibraryImport(importPath string) bool {
+	if importPath == "" {
+		return false
+	}
+	
+	// Local/main packages are not standard library
+	if importPath == "main" {
+		return false
+	}
+	
+	// Builtin is a special pseudo-package, not standard library
+	if importPath == "builtin" {
+		return false
+	}
+	
+	// If we have module context, check if this is a subpackage of the current module
+	if pa.moduleInfo != nil {
+		// If the import path starts with the current module path, it's not stdlib
+		if strings.HasPrefix(importPath, pa.moduleInfo.ModulePath+"/") || importPath == pa.moduleInfo.ModulePath {
+			return false
+		}
+	}
+	
+	// Standard library packages don't contain dots (domain names)
+	// This is a reliable way to detect them since all external packages
+	// should have domain names like github.com/user/repo
+	return !strings.Contains(importPath, ".")
 }
 
 // readFileContent reads the content of a file
