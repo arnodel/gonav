@@ -44,9 +44,14 @@ setSelectedFile({...fileData, filePath})
 **API Call:** `GET /file/{moduleAtVersion}/{filePath}`
 
 **Result:**
-- Source code displayed with syntax highlighting
-- Symbols are made clickable using the `references` array
-- Each clickable symbol has a `data-ref-index` attribute pointing to its reference
+- Source code displayed with syntax highlighting  
+- **Definitions and references** are both made clickable using enhanced arrays
+- **Scope-aware highlighting:** Definitions vs references styled differently
+- **Enhanced data structure:**
+  - `scopes`: Hierarchical code blocks (functions, if statements, loops)
+  - `definitions`: Local symbols defined in this file with scope information
+  - `references`: Symbol usages with explicit type classification
+- Each clickable symbol has attributes linking to the appropriate data structure
 
 ---
 
@@ -54,11 +59,23 @@ setSelectedFile({...fileData, filePath})
 
 **User Action:** Click on any symbol in the source code
 
-**Frontend Logic:** The `CodeViewer.jsx` component implements sophisticated navigation logic:
+**Frontend Logic:** The `CodeViewer.jsx` component implements sophisticated scope-aware navigation logic:
 
-#### Step 1: Position-Based Lookup
+#### Step 1: API Format Detection
 ```javascript
 // CodeViewer.jsx - handleSymbolClick()
+if (content.definitions && content.scopes) {
+  return handleNewApiSymbolClick(symbol, clickLine, clickColumn)
+} else {
+  return handleLegacyApiSymbolClick(symbol, clickLine, clickColumn)
+}
+```
+
+**Enhanced API Detection:** The frontend detects whether it's receiving the new scope-aware API format by checking for the presence of `definitions` and `scopes` arrays.
+
+#### Step 2: Position-Based Lookup
+```javascript
+// CodeViewer.jsx - handleNewApiSymbolClick()
 const reference = content.references.find(ref => 
   ref.name === symbol && 
   ref.line === clickLine && 
@@ -68,70 +85,144 @@ const reference = content.references.find(ref =>
 
 **Why Position-Based?** Name-based lookup fails with variable scoping. Multiple symbols can have the same name (local variables, method receivers, etc.). Position ensures we get the exact symbol clicked.
 
-#### Step 2: Reference Classification
-The frontend then routes navigation based on the reference type:
+#### Step 3: Enhanced Reference Classification
+The frontend routes navigation based on the explicit reference type from the enhanced API:
 
-##### Local References (`target.type` = "var", "func", "const", "type")
+##### Local References (`reference.type` = "local")
 ```javascript
-// Same file navigation
-if (reference.target.file && reference.target.line > 0) {
-  onSymbolClick(reference.target.file, reference.target.line)
+// Find definition in same file using definitionId
+if (reference.type === 'local') {
+  const definition = content.definitions.find(def => def.id === reference.definitionId)
+  if (definition) {
+    onSymbolClick(file, definition.line) // Navigate within same file
+    return
+  }
 }
 ```
-- **Scope:** Same file or same package
-- **Action:** Direct jump to `target.file:target.line`
-- **Example:** Local variable `b` → jumps to its declaration
+- **Scope:** Same file - locally defined symbols
+- **Action:** Direct jump to definition using `definitionId` linkage
+- **Examples:** 
+  - Local variables: `dumpAtEnd := false`
+  - Function parameters: `func main(args []string)`
+  - Local functions: `func helper() { ... }`
 
-##### Internal Cross-Package References (`target.type` = "internal")
+##### Internal Cross-Package References (`reference.type` = "internal")
 ```javascript
-// Handle internal references that need cross-package resolution
-if (reference.target.type === 'internal' && (!reference.target.file || reference.target.line === 0)) {
-  const packageParts = reference.target.package.split('/')
-  const packagePath = packageParts[packageParts.length - 1]
-  onNavigateToSymbol(packagePath, symbol, null, clickLine)
+// Cross-package navigation within same repository
+if (reference.type === 'internal' && reference.target.file && reference.target.line > 0) {
+  const targetFile = reference.target.file      // "runtime/runtime.go"
+  const targetLine = reference.target.line      // 45
+  // Check if cross-package navigation needed
+  if (targetPackagePath !== currentPackagePath) {
+    onNavigateToSymbol(targetPackagePath, symbol, null, clickLine)
+  } else {
+    onSymbolClick(reference.target.file, reference.target.line)
+  }
 }
 ```
-- **Scope:** Different package within same repository
-- **Action:** Cross-package navigation using package analysis
-- **Example:** `runtime.New` within `github.com/arnodel/golua`
+- **Scope:** Same repository, different package
+- **Action:** Cross-package navigation or direct file navigation
+- **Examples:** 
+  - `runtime.New` within `github.com/arnodel/golua`
+  - `ast.Walk` from local `go/ast` package
 
-##### External References (`target.type` = "external")
+##### External References (`reference.type` = "external")
 ```javascript
-// Handle external references (cross-repository)
-if (reference.target.type === 'external' && reference.target.isExternal) {
+// Handle external references (cross-repository or stdlib)
+if (reference.target?.isExternal && reference.target?.package?.includes('@')) {
   const modulePath = reference.target.importPath || reference.target.package
   const version = reference.target.version || 'latest'
   const moduleAtVersion = `${modulePath}@${version}`
   onNavigateToSymbol(packagePath, symbol, moduleAtVersion, clickLine)
+} else if (reference.target?.isStdLib) {
+  alert(`'${symbol}' is a Go standard library symbol from '${reference.target.package}'.`)
 }
 ```
-- **Scope:** Different repository entirely
-- **Action:** Load external repository first, then navigate
-- **Example:** Functions from `github.com/gin-gonic/gin`
+- **Scope:** Different repository or Go standard library
+- **Action:** Cross-repository navigation or informational message
+- **Examples:** 
+  - Third-party: `github.com/gin-gonic/gin@v1.9.1` functions
+  - Standard library: `fmt.Println`, `http.Get`
+  - Builtins: `make`, `len`, `int`, `string`
 
-##### Standard Library References (`target.isStdLib` = true)
-```javascript
-if (reference.target.isStdLib) {
-  alert(`'${symbol}' is a Go standard library symbol. Cannot navigate to source.`)
-}
-```
-- **Scope:** Go standard library
-- **Action:** Show informational message
-- **Example:** `fmt.Println`, `http.Get`
+#### Step 4: Scope-Aware Features
 
-##### Builtin References (`target.package` = "builtin")
+##### Definition Highlighting
 ```javascript
-if (reference.target.package === 'builtin') {
-  alert(`'${symbol}' is a Go builtin type/function. Cannot navigate to source.`)
+// Build definition map for highlighting
+const definitionMap = new Map()
+if (content.definitions) {
+  content.definitions.forEach(def => {
+    const key = `${def.line}`
+    definitionMap.get(key).push({
+      column: def.column,
+      name: def.name,
+      definitionId: def.id,
+      type: 'definition'
+    })
+  })
 }
 ```
-- **Scope:** Go language builtins
-- **Action:** Show informational message  
-- **Example:** `int`, `string`, `make`, `len`
+
+##### Enhanced Symbol Rendering
+- **Definitions** are highlighted differently from references
+- **Scope information** is available for advanced features
+- **Type signatures** are displayed in tooltips
 
 ---
 
-### 4. Cross-Package Navigation (Internal)
+### 4. Scope-Aware Features (New)
+
+**The enhanced API enables powerful scope-aware navigation features:**
+
+#### Definition vs Reference Distinction
+```javascript
+// Different styling for definitions vs references
+.symbol-definition {
+  background-color: #e3f2fd;  /* Light blue for definitions */
+  border-bottom: 2px solid #2196f3;
+}
+
+.symbol-reference {
+  background-color: #f3e5f5;  /* Light purple for references */
+  border-bottom: 1px solid #9c27b0;
+}
+```
+
+#### Smart Navigation Patterns
+- **Click on definition** → Find all references to that symbol
+- **Click on reference** → Jump to its definition (local) or source (external)
+- **Hover over symbol** → Show type signature and scope information
+
+#### Scope Hierarchy Understanding
+```javascript
+// Scope utilities for advanced features
+function getScopeAtPosition(line, column, scopes) {
+  return scopes.find(scope => {
+    const { start, end } = scope.range
+    return (line >= start.line && line <= end.line) &&
+           (column >= start.column && column <= end.column)
+  })
+}
+
+// Find all symbols visible at a given position
+function getSymbolsInScope(line, column, definitions, scopes) {
+  const currentScope = getScopeAtPosition(line, column, scopes)
+  return definitions.filter(def => 
+    isSymbolVisibleInScope(def.scopeId, currentScope?.id || '/')
+  )
+}
+```
+
+#### Advanced Features Enabled
+- **Variable shadowing detection**: Identify when local variables shadow outer scope
+- **Scope-aware autocomplete**: Only suggest symbols visible at cursor position  
+- **Smart refactoring**: Rename variables with proper scope awareness
+- **Enhanced debugging**: Show all variables in scope at any position
+
+---
+
+### 5. Cross-Package Navigation (Internal)
 
 **Trigger:** Clicking on symbols like `runtime.New` from `cmd/golua-repl`
 
@@ -305,11 +396,68 @@ packages.set(packageKey, packageInfo)
 
 ---
 
-## Future Enhancements
+## Implemented Enhancements ✅
 
-1. **Semantic Search:** Find symbols across entire repositories
-2. **Call Graph Visualization:** Show function call relationships  
-3. **Dependency Analysis:** Visualize module dependencies
-4. **Offline Mode:** Cache repositories for offline browsing
-5. **IDE Integration:** Browser extension for GitHub/GitLab
-6. **Performance Profiling:** Show hot paths and bottlenecks
+The following advanced features have been successfully implemented:
+
+### ✅ Scope-Aware Navigation
+- **Local symbol resolution**: Direct `definitionId` → definition linkage
+- **Definition highlighting**: Visual distinction between definitions and references
+- **Hierarchical scopes**: Function, block, and method scope analysis
+- **Cross-repository navigation**: Full module@version support with isolated environments
+
+### ✅ Enhanced Analysis
+- **golang.org/x/tools/go/packages integration**: Accurate type information
+- **Isolated environments**: Prevents dependency conflicts
+- **Standard library detection**: Proper classification and handling
+- **Cross-module reference resolution**: External dependency navigation
+
+### ✅ Performance Optimizations  
+- **Position-based lookup**: Eliminates ambiguity in symbol resolution
+- **Multi-level caching**: Repository, package, and file-level caching
+- **Streamlined API responses**: Reduced payload sizes with targeted data
+
+---
+
+## Future Enhancements 🚧
+
+### Planned Features
+1. **Advanced Scope Features:**
+   - Variable shadowing detection and warnings
+   - Scope-aware autocomplete suggestions
+   - Smart refactoring with scope awareness
+   
+2. **Enhanced Visualization:**
+   - Call graph visualization showing function relationships
+   - Dependency analysis with interactive module graphs
+   - Code coverage visualization overlay
+
+3. **Search & Discovery:**
+   - Semantic search across entire repositories
+   - Symbol usage analytics and hot path detection
+   - Cross-repository symbol search
+
+4. **Integration & Tooling:**
+   - IDE integration with VSCode/IntelliJ plugins
+   - Browser extensions for GitHub/GitLab code browsing
+   - API for third-party tool integration
+
+5. **Performance & Scaling:**
+   - Virtual scrolling for large files
+   - Background syntax highlighting with Web Workers
+   - Incremental analysis for real-time updates
+   - Offline mode with local repository caching
+
+### Backward Compatibility
+
+The frontend maintains full backward compatibility:
+```javascript
+// Automatic API format detection
+if (fileContent.definitions && fileContent.scopes) {
+  // Use enhanced scope-aware features
+  handleEnhancedNavigation(fileContent)
+} else {
+  // Graceful fallback to legacy behavior  
+  handleLegacyNavigation(fileContent)
+}
+```
