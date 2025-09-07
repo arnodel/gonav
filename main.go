@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -25,9 +26,9 @@ type Server struct {
 	discoveryCache map[string]map[string]*analyzer.PackageDiscovery
 }
 
-func NewServer() *Server {
+func NewServer(repoManager *repo.Manager) *Server {
 	return &Server{
-		repoManager:    repo.NewManager(),
+		repoManager:    repoManager,
 		analyzer:       analyzer.New(),
 		discoveryCache: make(map[string]map[string]*analyzer.PackageDiscovery),
 	}
@@ -308,7 +309,36 @@ func (s *Server) setupRoutes() *http.ServeMux {
 }
 
 func main() {
-	server := NewServer()
+	// Parse command line flags
+	isolated := flag.Bool("isolated", false, "Use isolated Go environment for module downloads")
+	flag.Parse()
+
+	// Create repository manager with optional isolation
+	var repoManager *repo.Manager
+	var err error
+	
+	if *isolated {
+		repoManager, err = repo.NewManager(repo.WithIsolation(true))
+		if err != nil {
+			log.Fatal("Failed to create isolated repository manager:", err)
+		}
+		fmt.Println("Running with isolated Go environment")
+		
+		// Ensure cleanup on exit
+		defer func() {
+			fmt.Println("Cleaning up isolated environment...")
+			if err := repoManager.Cleanup(); err != nil {
+				fmt.Printf("Warning: failed to cleanup isolated environment: %v\n", err)
+			}
+		}()
+	} else {
+		repoManager, err = repo.NewManager()
+		if err != nil {
+			log.Fatal("Failed to create repository manager:", err)
+		}
+	}
+
+	server := NewServer(repoManager)
 	mux := server.setupRoutes()
 
 	port := os.Getenv("PORT")
@@ -330,6 +360,9 @@ func main() {
 		fmt.Printf("Server starting on port %s\n", port)
 		fmt.Printf("Frontend will be served from: frontend/dist\n")
 		fmt.Printf("API available at: /api/repo/{module@version} and /api/file/{module@version}/{path}\n")
+		if *isolated {
+			fmt.Printf("Running in isolated mode\n")
+		}
 		
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal("Server failed to start:", err)

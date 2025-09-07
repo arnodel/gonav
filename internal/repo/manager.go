@@ -7,11 +7,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"gonav/internal/env"
 )
 
 type Manager struct {
-	cacheDir string
-	repos    map[string]string // moduleAtVersion -> local path
+	cacheDir    string
+	repos       map[string]string // moduleAtVersion -> local path
+	isolatedEnv *env.IsolatedEnv  // Optional isolation environment
 }
 
 type RepositoryInfo struct {
@@ -37,14 +40,43 @@ type GoModDownloadInfo struct {
 	GoModSum string `json:"GoModSum"` // GoMod checksum
 }
 
-func NewManager() *Manager {
+// ManagerOption configures a Manager
+type ManagerOption func(*Manager) error
+
+// WithIsolation enables isolated Go environment
+func WithIsolation(isolated bool) ManagerOption {
+	return func(m *Manager) error {
+		if isolated {
+			envDir := filepath.Join(m.cacheDir, "isolated-env")
+			isolatedEnv, err := env.NewIsolated(envDir)
+			if err != nil {
+				return fmt.Errorf("failed to create isolated environment: %w", err)
+			}
+			m.isolatedEnv = isolatedEnv
+			fmt.Printf("Isolated Go environment created at: %s\n", envDir)
+		}
+		return nil
+	}
+}
+
+// NewManager creates a new repository manager with optional configuration
+func NewManager(opts ...ManagerOption) (*Manager, error) {
 	cacheDir := filepath.Join(os.TempDir(), "gonav-cache")
 	os.MkdirAll(cacheDir, 0755)
 
-	return &Manager{
+	m := &Manager{
 		cacheDir: cacheDir,
 		repos:    make(map[string]string),
 	}
+
+	// Apply options
+	for _, opt := range opts {
+		if err := opt(m); err != nil {
+			return nil, err
+		}
+	}
+
+	return m, nil
 }
 
 func (m *Manager) LoadRepository(moduleAtVersion string) (*RepositoryInfo, error) {
@@ -122,7 +154,16 @@ func (m *Manager) downloadRepository(modulePath, version, localPath string) erro
 func (m *Manager) downloadWithGoMod(modulePath, version string) (string, error) {
 	moduleAtVersion := modulePath + "@" + version
 	
-	// Use go mod download with JSON output to get the exact location
+	if m.isolatedEnv != nil {
+		// Use isolated environment
+		downloadInfo, err := m.isolatedEnv.DownloadModule(moduleAtVersion)
+		if err != nil {
+			return "", err
+		}
+		return downloadInfo.Dir, nil
+	}
+	
+	// Use host environment (existing behavior)
 	cmd := exec.Command("go", "mod", "download", "-json", moduleAtVersion)
 	output, err := cmd.Output()
 	if err != nil {
@@ -241,4 +282,36 @@ func (m *Manager) findGoFiles(rootPath string) ([]FileInfo, error) {
 	})
 
 	return files, err
+}
+
+// GetIsolatedEnv returns the isolated environment if available
+func (m *Manager) GetIsolatedEnv() *env.IsolatedEnv {
+	return m.isolatedEnv
+}
+
+// IsIsolated returns true if the manager is using isolated environment
+func (m *Manager) IsIsolated() bool {
+	return m.isolatedEnv != nil
+}
+
+// Stats returns information about the manager and its environment
+func (m *Manager) Stats() map[string]interface{} {
+	stats := make(map[string]interface{})
+	stats["cache_dir"] = m.cacheDir
+	stats["loaded_repositories"] = len(m.repos)
+	stats["isolated"] = m.IsIsolated()
+	
+	if m.isolatedEnv != nil {
+		stats["isolation_stats"] = m.isolatedEnv.Stats()
+	}
+	
+	return stats
+}
+
+// Cleanup cleans up resources used by the manager
+func (m *Manager) Cleanup() error {
+	if m.isolatedEnv != nil {
+		return m.isolatedEnv.Cleanup()
+	}
+	return nil
 }
