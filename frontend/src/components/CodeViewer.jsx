@@ -44,7 +44,7 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
       }
       
       // Handle external references (cross-repository)
-      if (reference.target.type === 'external' && reference.target.isExternal) {
+      if (reference.target.isExternal && reference.target.package && reference.target.package.includes('@')) {
         const modulePath = reference.target.importPath || reference.target.package
         const version = reference.target.version || 'latest'
         const moduleAtVersion = `${modulePath}@${version}`
@@ -65,12 +65,6 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
         return
       }
       
-      // Handle external references (cross-repository) that need to be resolved first
-      if (reference.target.type === 'external' && (!reference.target.file || reference.target.line === 0)) {
-        console.log('External reference needs resolution:', reference.name, 'from', reference.target.importPath)
-        alert(`External reference to '${reference.name}' from ${reference.target.importPath || reference.target.package}. Cross-repository navigation not yet implemented.`)
-        return
-      }
       
       // Handle internal references that need cross-package resolution
       if (reference.target.type === 'internal' && (!reference.target.file || reference.target.line === 0)) {
@@ -178,7 +172,7 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
               return
             }
           }
-        } else if (reference.type === 'external') {
+        } else if (reference.target?.isExternal) {
           // External reference - handle cross-repository navigation
           if (reference.target?.isStdLib) {
             alert(`'${symbol}' is a Go standard library symbol from package '${reference.target.package}'. Cannot navigate to standard library source.`)
@@ -263,7 +257,7 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
     }
     
     // Handle external references (cross-repository)
-    if (reference.target.type === 'external' && reference.target.isExternal) {
+    if (reference.target.isExternal && reference.target.package && reference.target.package.includes('@')) {
       const modulePath = reference.target.importPath || reference.target.package
       const version = reference.target.version || 'latest'
       const moduleAtVersion = `${modulePath}@${version}`
@@ -284,12 +278,6 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
       return
     }
     
-    // Handle external references (cross-repository) that need to be resolved first
-    if (reference.target.type === 'external' && (!reference.target.file || reference.target.line === 0)) {
-      console.log('External reference needs resolution:', symbol, 'from', reference.target.importPath)
-      alert(`External reference to '${symbol}' from ${reference.target.importPath || reference.target.package}. Cross-repository navigation not yet implemented.`)
-      return
-    }
     
     // Handle internal references that need cross-package resolution
     if (reference.target.type === 'internal' && (!reference.target.file || reference.target.line === 0)) {

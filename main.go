@@ -22,15 +22,45 @@ import (
 type Server struct {
 	repoManager   *repo.Manager
 	analyzer      *analyzer.PackageAnalyzer
+	usePackages   bool // Whether enhanced packages mode is enabled
 	// Cache for package discoveries per repository
 	discoveryCache map[string]map[string]*analyzer.PackageDiscovery
 }
 
-func NewServer(repoManager *repo.Manager) *Server {
+func NewServer(repoManager *repo.Manager, usePackages bool) *Server {
+	var analyzerInstance *analyzer.PackageAnalyzer
+	if usePackages {
+		// Create enhanced analyzer with packages support
+		analyzerInstance = analyzer.New()
+		fmt.Println("Enhanced analyzer with golang.org/x/tools/go/packages enabled")
+	} else {
+		// Use standard analyzer
+		analyzerInstance = analyzer.New()
+	}
+	
 	return &Server{
 		repoManager:    repoManager,
-		analyzer:       analyzer.New(),
+		analyzer:       analyzerInstance,
+		usePackages:    usePackages,
 		discoveryCache: make(map[string]map[string]*analyzer.PackageDiscovery),
+	}
+}
+
+// configureAnalyzerForRepository configures the analyzer with repository context for enhanced analysis
+func (s *Server) configureAnalyzerForRepository(repoPath string) {
+	if s.usePackages {
+		// Get environment from repository manager if it's using isolation
+		var env []string
+		if s.repoManager.IsIsolated() {
+			isolatedEnv := s.repoManager.GetIsolatedEnv()
+			if isolatedEnv != nil {
+				env = isolatedEnv.Environment()
+			}
+		}
+		
+		// Configure packages analyzer with repository context
+		s.analyzer.WithPackagesSupport(repoPath, env)
+		fmt.Printf("Configured enhanced analyzer for repository at %s\n", repoPath)
 	}
 }
 
@@ -70,6 +100,9 @@ func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
 	// Discover packages in the repository (fast operation)
 	repoPath := s.repoManager.GetRepositoryPath(moduleAtVersion)
 	if repoPath != "" {
+		// Configure analyzer with repository context for enhanced analysis
+		s.configureAnalyzerForRepository(repoPath)
+		
 		packageDiscoveries, err := s.analyzer.DiscoverPackages(repoPath)
 		if err != nil {
 			fmt.Printf("Failed to discover packages (continuing anyway): %v\n", err)
@@ -311,6 +344,7 @@ func (s *Server) setupRoutes() *http.ServeMux {
 func main() {
 	// Parse command line flags
 	isolated := flag.Bool("isolated", false, "Use isolated Go environment for module downloads")
+	usePackages := flag.Bool("packages", false, "Use golang.org/x/tools/go/packages for enhanced analysis")
 	flag.Parse()
 
 	// Create repository manager with optional isolation
@@ -338,7 +372,7 @@ func main() {
 		}
 	}
 
-	server := NewServer(repoManager)
+	server := NewServer(repoManager, *usePackages)
 	mux := server.setupRoutes()
 
 	port := os.Getenv("PORT")
@@ -362,6 +396,9 @@ func main() {
 		fmt.Printf("API available at: /api/repo/{module@version} and /api/file/{module@version}/{path}\n")
 		if *isolated {
 			fmt.Printf("Running in isolated mode\n")
+		}
+		if *usePackages {
+			fmt.Printf("Running with enhanced golang.org/x/tools/go/packages analysis\n")
 		}
 		
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

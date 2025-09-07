@@ -19,6 +19,8 @@ type PackageAnalyzer struct {
 	fset           *token.FileSet
 	packages       map[string]*PackageInfo
 	stdLibCache    map[string]bool // Cache for standard library detection
+	usePackages    bool           // Whether to use golang.org/x/tools/go/packages
+	packagesAnalyzer *PackagesAnalyzer // Optional packages-based analyzer
 }
 
 type PackageDiscovery struct {
@@ -125,7 +127,15 @@ func New() *PackageAnalyzer {
 		fset:        token.NewFileSet(),
 		packages:    make(map[string]*PackageInfo),
 		stdLibCache: make(map[string]bool),
+		usePackages: false, // Disabled by default for backward compatibility
 	}
+}
+
+// WithPackagesSupport enables golang.org/x/tools/go/packages for enhanced analysis
+func (a *PackageAnalyzer) WithPackagesSupport(repoPath string, env []string) *PackageAnalyzer {
+	a.usePackages = true
+	a.packagesAnalyzer = NewPackagesAnalyzer(repoPath, env)
+	return a
 }
 
 // ParseModuleInfo parses the go.mod file in the given repository path
@@ -362,6 +372,27 @@ func (a *PackageAnalyzer) findFilesInPackage(packageDir string) ([]string, error
 // AnalyzePackage analyzes a specific package on-demand
 func (a *PackageAnalyzer) AnalyzePackage(repoPath, packagePath string) (*PackageInfo, error) {
 	fmt.Printf("Analyzing package: %s in %s\n", packagePath, repoPath)
+
+	// Use packages analyzer if enabled
+	if a.usePackages && a.packagesAnalyzer != nil {
+		fmt.Printf("Using golang.org/x/tools/go/packages for analysis\n")
+		
+		// Parse module information for context
+		moduleInfo, err := a.ParseModuleInfo(repoPath)
+		if err != nil {
+			fmt.Printf("Warning: failed to parse module info for packages analyzer: %v\n", err)
+			moduleInfo = &ModuleInfo{
+				ModulePath:   "",
+				Dependencies: make(map[string]string),
+				Replaces:     make(map[string]string),
+			}
+		}
+		
+		// Set module context for proper external reference resolution
+		a.packagesAnalyzer.SetModuleContext(moduleInfo)
+		
+		return a.packagesAnalyzer.AnalyzePackageWithPackages(packagePath)
+	}
 
 	// Parse module information
 	moduleInfo, err := a.ParseModuleInfo(repoPath)
@@ -1223,6 +1254,27 @@ func (a *PackageAnalyzer) createSymbolFromObject(obj types.Object, file string, 
 
 // AnalyzeSingleFile analyzes a single file and returns detailed file information
 func (a *PackageAnalyzer) AnalyzeSingleFile(repoPath, filePath string) (*FileInfo, error) {
+	// Use packages analyzer if enabled
+	if a.usePackages && a.packagesAnalyzer != nil {
+		fmt.Printf("Using golang.org/x/tools/go/packages for file analysis\n")
+		
+		// Parse module information for context
+		moduleInfo, err := a.ParseModuleInfo(repoPath)
+		if err != nil {
+			fmt.Printf("Warning: failed to parse module info for packages analyzer: %v\n", err)
+			moduleInfo = &ModuleInfo{
+				ModulePath:   "",
+				Dependencies: make(map[string]string),
+				Replaces:     make(map[string]string),
+			}
+		}
+		
+		// Set module context for proper external reference resolution
+		a.packagesAnalyzer.SetModuleContext(moduleInfo)
+		
+		return a.packagesAnalyzer.AnalyzeSingleFileWithPackages(filePath)
+	}
+
 	// Parse module information
 	moduleInfo, err := a.ParseModuleInfo(repoPath)
 	if err != nil {
