@@ -113,6 +113,117 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
   const handleSymbolClick = async (symbol, clickLine = null, clickColumn = null) => {
     console.log('Symbol clicked:', symbol, 'at line:', clickLine, 'column:', clickColumn)
     
+    // Check if using new scope-aware API format
+    if (content.definitions && content.scopes) {
+      console.log('Using new scope-aware API format')
+      return handleNewApiSymbolClick(symbol, clickLine, clickColumn)
+    } else {
+      console.log('Using legacy API format')
+      return handleLegacyApiSymbolClick(symbol, clickLine, clickColumn)
+    }
+  }
+
+  const handleNewApiSymbolClick = async (symbol, clickLine, clickColumn) => {
+    // Use position-based lookup in references array
+    if (content.references && clickLine && clickColumn) {
+      // Find the reference at the exact click position
+      const reference = content.references.find(ref => 
+        ref.name === symbol && 
+        ref.line === clickLine && 
+        Math.abs(ref.column - clickColumn) <= symbol.length  // Allow some tolerance for click position
+      )
+      
+      if (reference) {
+        console.log('Found reference:', reference)
+        
+        // Handle new scope-aware reference types
+        if (reference.type === 'local') {
+          // Local reference - find definition by definitionId
+          const definition = content.definitions.find(def => def.id === reference.definitionId)
+          if (definition) {
+            console.log('Local reference - navigating to definition:', definition)
+            onSymbolClick(file, definition.line) // Navigate within same file
+            return
+          } else {
+            console.log('Definition not found for local reference:', reference.definitionId)
+          }
+        } else if (reference.type === 'internal') {
+          // Internal reference - use existing cross-package navigation with reference.target
+          if (reference.target && reference.target.file && reference.target.line > 0) {
+            console.log('Internal reference with resolved target:', reference.target)
+            
+            // Check if it's cross-package navigation
+            const currentPackagePath = file.includes('/') ? file.substring(0, file.lastIndexOf('/')) : ''
+            const targetFile = reference.target.file
+            const targetPackagePath = targetFile.includes('/') ? targetFile.substring(0, targetFile.lastIndexOf('/')) : ''
+            
+            if (targetPackagePath !== currentPackagePath && targetPackagePath && onNavigateToSymbol) {
+              console.log('Internal cross-package navigation to:', targetPackagePath, symbol)
+              onNavigateToSymbol(targetPackagePath, symbol, null, clickLine)
+              return
+            }
+            
+            // Same package navigation
+            console.log('Internal same-package navigation to:', reference.target.file, 'line:', reference.target.line)
+            onSymbolClick(reference.target.file, reference.target.line)
+            return
+          } else {
+            // Internal reference that needs resolution
+            console.log('Internal reference needs resolution:', symbol, 'from', reference.target?.package)
+            if (onNavigateToSymbol && reference.target?.package) {
+              const packageParts = reference.target.package.split('/')
+              const packagePath = packageParts[packageParts.length - 1]
+              console.log('Attempting internal cross-package navigation to:', packagePath, symbol)
+              onNavigateToSymbol(packagePath, symbol, null, clickLine)
+              return
+            }
+          }
+        } else if (reference.type === 'external') {
+          // External reference - handle cross-repository navigation
+          if (reference.target?.isStdLib) {
+            alert(`'${symbol}' is a Go standard library symbol from package '${reference.target.package}'. Cannot navigate to standard library source.`)
+            return
+          }
+          
+          if (reference.target?.package === 'builtin') {
+            alert(`'${symbol}' is a Go builtin type/function. Cannot navigate to builtin source.`)
+            return
+          }
+          
+          if (reference.target?.isExternal) {
+            const modulePath = reference.target.importPath || reference.target.package
+            const version = reference.target.version || 'latest'
+            const moduleAtVersion = `${modulePath}@${version}`
+            
+            console.log(`External cross-repository reference: ${symbol} in ${moduleAtVersion}`)
+            
+            // Extract package path from the import path
+            let packagePath = ''
+            if (modulePath.includes('/')) {
+              const parts = modulePath.split('/')
+              if (parts.length > 3) {
+                packagePath = parts.slice(3).join('/')
+              }
+            }
+            
+            console.log(`Cross-repository navigation to: packagePath='${packagePath}', symbol='${symbol}', moduleAtVersion='${moduleAtVersion}'`)
+            onNavigateToSymbol(packagePath, symbol, moduleAtVersion, clickLine)
+            return
+          }
+        }
+        
+        // Fallback to legacy handling if reference has target
+        if (reference.target) {
+          return handleLegacyReference(reference, symbol, clickLine)
+        }
+      }
+    }
+    
+    // No reference found
+    console.log('No reference found at position for symbol:', symbol)
+  }
+
+  const handleLegacyApiSymbolClick = async (symbol, clickLine, clickColumn) => {
     // Use position-based lookup in references array instead of name-based lookup in symbols
     if (content.references && clickLine && clickColumn) {
       // Find the reference at the exact click position
@@ -123,81 +234,7 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
       )
       
       if (reference && reference.target) {
-        console.log('Found reference with target:', reference.target)
-        
-        // Check if this is a builtin symbol
-        if (reference.target.package === 'builtin') {
-          alert(`'${symbol}' is a Go builtin type/function. Cannot navigate to builtin source.`)
-          return
-        }
-        
-        // Check if this is a standard library symbol
-        if (reference.target.isStdLib) {
-          alert(`'${symbol}' is a Go standard library symbol from package '${reference.target.package}'. Cannot navigate to standard library source.`)
-          return
-        }
-        
-        // Handle external references (cross-repository)
-        if (reference.target.type === 'external' && reference.target.isExternal) {
-          const modulePath = reference.target.importPath || reference.target.package
-          const version = reference.target.version || 'latest'
-          const moduleAtVersion = `${modulePath}@${version}`
-          
-          console.log(`Cross-repository reference: ${symbol} in ${moduleAtVersion}`)
-          
-          // Extract package path from the import path
-          let packagePath = ''
-          if (modulePath.includes('/')) {
-            const parts = modulePath.split('/')
-            if (parts.length > 3) {
-              packagePath = parts.slice(3).join('/')
-            }
-          }
-          
-          console.log(`About to call onNavigateToSymbol with packagePath: '${packagePath}', symbol: '${symbol}', moduleAtVersion: '${moduleAtVersion}'`)
-          onNavigateToSymbol(packagePath, symbol, moduleAtVersion, clickLine)
-          return
-        }
-        
-        // Handle external references (cross-repository) that need to be resolved first
-        if (reference.target.type === 'external' && (!reference.target.file || reference.target.line === 0)) {
-          console.log('External reference needs resolution:', symbol, 'from', reference.target.importPath)
-          alert(`External reference to '${symbol}' from ${reference.target.importPath || reference.target.package}. Cross-repository navigation not yet implemented.`)
-          return
-        }
-        
-        // Handle internal references that need cross-package resolution
-        if (reference.target.type === 'internal' && (!reference.target.file || reference.target.line === 0)) {
-          console.log('Internal cross-package reference needs resolution:', symbol, 'from', reference.target.package)
-          // Try to use onNavigateToSymbol for internal cross-package navigation
-          if (onNavigateToSymbol && reference.target.package) {
-            // Extract package path from the import path (e.g., "github.com/arnodel/golua/runtime" -> "runtime")
-            const packageParts = reference.target.package.split('/')
-            const packagePath = packageParts[packageParts.length - 1]
-            console.log('Attempting internal cross-package navigation to:', packagePath, symbol)
-            onNavigateToSymbol(packagePath, symbol, null, clickLine)
-            return
-          }
-          alert(`Internal reference to '${symbol}' from package '${reference.target.package}'. Cross-package navigation needs implementation.`)
-          return
-        }
-        
-        // Handle same-repository references (including cross-package within same repo)
-        const currentPackagePath = file.includes('/') ? file.substring(0, file.lastIndexOf('/')) : ''
-        const targetFile = reference.target.file
-        const targetPackagePath = targetFile.includes('/') ? targetFile.substring(0, targetFile.lastIndexOf('/')) : ''
-        
-        // Cross-package navigation within same repository
-        if (targetPackagePath !== currentPackagePath && targetPackagePath && onNavigateToSymbol) {
-          console.log('Cross-package navigation to:', targetPackagePath, symbol)
-          onNavigateToSymbol(targetPackagePath, symbol, null, clickLine)
-          return
-        }
-        
-        // Same package navigation (including same file)
-        console.log('Same package navigation to:', reference.target.file, 'line:', reference.target.line)
-        onSymbolClick(reference.target.file, reference.target.line)
-        return
+        return handleLegacyReference(reference, symbol, clickLine)
       }
     }
     
@@ -208,6 +245,84 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
       const sameNameRefs = content.references.filter(ref => ref.name === symbol)
       console.log(`Found ${sameNameRefs.length} references with same name:`, sameNameRefs.map(ref => `${ref.line}:${ref.column}`))
     }
+  }
+
+  const handleLegacyReference = (reference, symbol, clickLine) => {
+    console.log('Found reference with target:', reference.target)
+    
+    // Check if this is a builtin symbol
+    if (reference.target.package === 'builtin') {
+      alert(`'${symbol}' is a Go builtin type/function. Cannot navigate to builtin source.`)
+      return
+    }
+    
+    // Check if this is a standard library symbol
+    if (reference.target.isStdLib) {
+      alert(`'${symbol}' is a Go standard library symbol from package '${reference.target.package}'. Cannot navigate to standard library source.`)
+      return
+    }
+    
+    // Handle external references (cross-repository)
+    if (reference.target.type === 'external' && reference.target.isExternal) {
+      const modulePath = reference.target.importPath || reference.target.package
+      const version = reference.target.version || 'latest'
+      const moduleAtVersion = `${modulePath}@${version}`
+      
+      console.log(`Cross-repository reference: ${symbol} in ${moduleAtVersion}`)
+      
+      // Extract package path from the import path
+      let packagePath = ''
+      if (modulePath.includes('/')) {
+        const parts = modulePath.split('/')
+        if (parts.length > 3) {
+          packagePath = parts.slice(3).join('/')
+        }
+      }
+      
+      console.log(`About to call onNavigateToSymbol with packagePath: '${packagePath}', symbol: '${symbol}', moduleAtVersion: '${moduleAtVersion}'`)
+      onNavigateToSymbol(packagePath, symbol, moduleAtVersion, clickLine)
+      return
+    }
+    
+    // Handle external references (cross-repository) that need to be resolved first
+    if (reference.target.type === 'external' && (!reference.target.file || reference.target.line === 0)) {
+      console.log('External reference needs resolution:', symbol, 'from', reference.target.importPath)
+      alert(`External reference to '${symbol}' from ${reference.target.importPath || reference.target.package}. Cross-repository navigation not yet implemented.`)
+      return
+    }
+    
+    // Handle internal references that need cross-package resolution
+    if (reference.target.type === 'internal' && (!reference.target.file || reference.target.line === 0)) {
+      console.log('Internal cross-package reference needs resolution:', symbol, 'from', reference.target.package)
+      // Try to use onNavigateToSymbol for internal cross-package navigation
+      if (onNavigateToSymbol && reference.target.package) {
+        // Extract package path from the import path (e.g., "github.com/arnodel/golua/runtime" -> "runtime")
+        const packageParts = reference.target.package.split('/')
+        const packagePath = packageParts[packageParts.length - 1]
+        console.log('Attempting internal cross-package navigation to:', packagePath, symbol)
+        onNavigateToSymbol(packagePath, symbol, null, clickLine)
+        return
+      }
+      alert(`Internal reference to '${symbol}' from package '${reference.target.package}'. Cross-package navigation needs implementation.`)
+      return
+    }
+    
+    // Handle same-repository references (including cross-package within same repo)
+    const currentPackagePath = file.includes('/') ? file.substring(0, file.lastIndexOf('/')) : ''
+    const targetFile = reference.target.file
+    const targetPackagePath = targetFile.includes('/') ? targetFile.substring(0, targetFile.lastIndexOf('/')) : ''
+    
+    // Cross-package navigation within same repository
+    if (targetPackagePath !== currentPackagePath && targetPackagePath && onNavigateToSymbol) {
+      console.log('Cross-package navigation to:', targetPackagePath, symbol)
+      onNavigateToSymbol(targetPackagePath, symbol, null, clickLine)
+      return
+    }
+    
+    // Same package navigation (including same file)
+    console.log('Same package navigation to:', reference.target.file, 'line:', reference.target.line)
+    onSymbolClick(reference.target.file, reference.target.line)
+    return
   }
 
   const renderCodeWithSymbols = (code) => {
@@ -227,7 +342,26 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
           column: ref.column,
           name: ref.name,
           length: ref.name.length,
-          originalIndex: index  // Keep track of the original index
+          originalIndex: index,  // Keep track of the original index
+          type: 'reference'
+        })
+      })
+    }
+    
+    // Create a map of line -> column positions for definitions (scope-aware API)
+    const definitionMap = new Map()
+    if (content.definitions) {
+      content.definitions.forEach(def => {
+        const key = `${def.line}`
+        if (!definitionMap.has(key)) {
+          definitionMap.set(key, [])
+        }
+        definitionMap.get(key).push({
+          column: def.column,
+          name: def.name,
+          length: def.name.length,
+          definitionId: def.id,
+          type: 'definition'
         })
       })
     }
@@ -236,34 +370,37 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
       const lineNumber = index + 1
       let processedLine = line
       
-      // Make only actual references clickable (not all symbol occurrences)
-      const lineRefs = referenceMap.get(String(lineNumber))
-      if (lineRefs) {
+      // Collect all symbols (references and definitions) on this line
+      const lineRefs = referenceMap.get(String(lineNumber)) || []
+      const lineDefs = definitionMap.get(String(lineNumber)) || []
+      const allSymbols = [...lineRefs, ...lineDefs]
+      
+      if (allSymbols.length > 0) {
         // Sort by column position in reverse order to avoid position shifts during replacement
-        const sortedRefs = [...lineRefs].sort((a, b) => b.column - a.column)
+        const sortedSymbols = allSymbols.sort((a, b) => b.column - a.column)
         
-        sortedRefs.forEach((ref, index) => {
+        sortedSymbols.forEach((symbol) => {
           // Column positions are typically 1-based, convert to 0-based for JavaScript
-          const startPos = ref.column - 1
-          const endPos = startPos + ref.length
+          const startPos = symbol.column - 1
+          const endPos = startPos + symbol.length
           
-          // Verify the text at this position matches the reference name
+          // Verify the text at this position matches the symbol name
           // Use the original line, not the processed line, for position checking
           const textAtPosition = line.substring(startPos, endPos)
-          if (textAtPosition === ref.name) {
-            // For string replacement, we need to work backwards since we sorted in reverse order
-            // Find the current position in the processedLine that corresponds to the original position
-            let currentStartPos = startPos
-            let currentEndPos = endPos
-            
+          if (textAtPosition === symbol.name) {
             // Since we're processing from right to left, the position should still be valid
-            const currentText = processedLine.substring(currentStartPos, currentEndPos)
-            if (currentText === ref.name) {
-              const before = processedLine.substring(0, currentStartPos)
-              const after = processedLine.substring(currentEndPos)
+            const currentText = processedLine.substring(startPos, endPos)
+            if (currentText === symbol.name) {
+              const before = processedLine.substring(0, startPos)
+              const after = processedLine.substring(endPos)
               
-              // Use the original reference index we stored
-              processedLine = before + `<span class="symbol" data-ref-index="${ref.originalIndex}">${ref.name}</span>` + after
+              if (symbol.type === 'reference') {
+                // Use the original reference index for references
+                processedLine = before + `<span class="symbol symbol-reference" data-ref-index="${symbol.originalIndex}">${symbol.name}</span>` + after
+              } else if (symbol.type === 'definition') {
+                // Use definition ID for definitions
+                processedLine = before + `<span class="symbol symbol-definition" data-def-id="${symbol.definitionId}">${symbol.name}</span>` + after
+              }
             }
           }
         })
@@ -294,11 +431,24 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
           }}
           onClick={(e) => {
             if (e.target.classList.contains('symbol')) {
-              // Get the reference index directly from the DOM element
-              const refIndex = parseInt(e.target.dataset.refIndex)
-              if (refIndex >= 0 && content.references && content.references[refIndex]) {
-                const reference = content.references[refIndex]
-                handleSymbolClickWithReference(reference)
+              // Handle both references and definitions
+              if (e.target.dataset.refIndex !== undefined) {
+                // Reference click
+                const refIndex = parseInt(e.target.dataset.refIndex)
+                if (refIndex >= 0 && content.references && content.references[refIndex]) {
+                  const reference = content.references[refIndex]
+                  handleSymbolClickWithReference(reference)
+                }
+              } else if (e.target.dataset.defId !== undefined) {
+                // Definition click - for now, just show info about the definition
+                const defId = e.target.dataset.defId
+                const definition = content.definitions?.find(def => def.id === defId)
+                if (definition) {
+                  console.log('Definition clicked:', definition)
+                  // For now, just show definition information
+                  // Later we could implement "find all references" functionality
+                  alert(`Definition: ${definition.name} (${definition.type}) in scope ${definition.scopeId}`)
+                }
               }
             }
           }}

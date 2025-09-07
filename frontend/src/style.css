@@ -327,13 +327,22 @@ body {
 }
 
 .symbol {
-  color: #0066cc;
   cursor: pointer;
   text-decoration: none;
 }
 
 .symbol:hover {
   text-decoration: underline;
+}
+
+/* Reference styling (blue for references) */
+.symbol-reference {
+  color: #0066cc;
+}
+
+/* Definition styling (green for definitions) */  
+.symbol-definition {
+  color: #228B22;
 }
 
 /* Navigation Breadcrumbs */

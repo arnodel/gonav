@@ -235,10 +235,19 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("Returning analyzed file info with %d symbols and %d references\n", 
 			len(analyzerFileInfo.Symbols), len(analyzerFileInfo.References))
 		
-		// Convert analyzer format to frontend-expected format
+		// Convert analyzer format to frontend-expected format with scope-aware data
 		frontendFileInfo := map[string]interface{}{
 			"source": analyzerFileInfo.Source,
 			"references": analyzerFileInfo.References,
+		}
+		
+		// Add scope-aware fields if available
+		if analyzerFileInfo.Scopes != nil && len(analyzerFileInfo.Scopes) > 0 {
+			frontendFileInfo["scopes"] = analyzerFileInfo.Scopes
+		}
+		
+		if analyzerFileInfo.Definitions != nil && len(analyzerFileInfo.Definitions) > 0 {
+			frontendFileInfo["definitions"] = analyzerFileInfo.Definitions
 		}
 		
 		fmt.Printf("Converted to frontend format with %d references\n", 
