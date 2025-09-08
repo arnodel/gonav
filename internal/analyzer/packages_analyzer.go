@@ -204,8 +204,57 @@ func (pa *PackagesAnalyzer) extractSymbolsFromPackage(pkg *packages.Package) []S
 			symbols = append(symbols, *symbol)
 		}
 		
-		// Note: We intentionally do NOT extract methods here as they would cause
-		// key collisions in the symbols map (methods vs functions with same name)
+		// If this is a type definition, also extract its methods with qualified names
+		if typeName, ok := obj.(*types.TypeName); ok {
+			namedType, ok := typeName.Type().(*types.Named)
+			if ok {
+				// Extract methods from this named type using MethodSet for completeness
+				// This handles both value and pointer receiver methods
+				valueMethodSet := types.NewMethodSet(namedType)
+				for i := 0; i < valueMethodSet.Len(); i++ {
+					selection := valueMethodSet.At(i)
+					method := selection.Obj()
+					if methodObj, ok := method.(*types.Func); ok {
+						methodSymbol := pa.convertObjectToSymbol(methodObj, pkg)
+						if methodSymbol != nil {
+							// Create qualified method name: "TypeName.MethodName" for value receiver
+							qualifiedName := fmt.Sprintf("%s.%s", typeName.Name(), methodObj.Name())
+							methodSymbol.Name = qualifiedName
+							symbols = append(symbols, *methodSymbol)
+						}
+					}
+				}
+				
+				// Also check pointer type methods (methods with pointer receivers)
+				if ptrType := types.NewPointer(namedType); ptrType != nil {
+					ptrMethodSet := types.NewMethodSet(ptrType)
+					for i := 0; i < ptrMethodSet.Len(); i++ {
+						selection := ptrMethodSet.At(i)
+						method := selection.Obj()
+						if methodObj, ok := method.(*types.Func); ok {
+							methodSymbol := pa.convertObjectToSymbol(methodObj, pkg)
+							if methodSymbol != nil {
+								// Create qualified method name: "(*TypeName).MethodName" for pointer receiver
+								qualifiedName := fmt.Sprintf("(*%s).%s", typeName.Name(), methodObj.Name())
+								
+								// Check if we already added this method from value method set
+								found := false
+								for _, existing := range symbols {
+									if existing.Name == qualifiedName {
+										found = true
+										break
+									}
+								}
+								if !found {
+									methodSymbol.Name = qualifiedName
+									symbols = append(symbols, *methodSymbol)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	return symbols
@@ -262,6 +311,32 @@ func (pa *PackagesAnalyzer) extractFileSymbolsAndReferences(file *ast.File, pkg 
 	})
 }
 
+// getQualifiedMethodName returns the qualified method name if obj is a method, otherwise returns obj.Name()
+func (pa *PackagesAnalyzer) getQualifiedMethodName(obj types.Object) string {
+	if fn, ok := obj.(*types.Func); ok {
+		// Check if this is a method (has a receiver)
+		sig := fn.Type().(*types.Signature)
+		if recv := sig.Recv(); recv != nil {
+			recvType := recv.Type()
+			
+			// Handle pointer receiver
+			if ptr, ok := recvType.(*types.Pointer); ok {
+				if named, ok := ptr.Elem().(*types.Named); ok {
+					return fmt.Sprintf("(*%s).%s", named.Obj().Name(), fn.Name())
+				}
+			}
+			
+			// Handle value receiver
+			if named, ok := recvType.(*types.Named); ok {
+				return fmt.Sprintf("%s.%s", named.Obj().Name(), fn.Name())
+			}
+		}
+	}
+	
+	// Not a method, return regular name
+	return obj.Name()
+}
+
 // convertObjectToSymbol converts a types.Object to our Symbol format
 func (pa *PackagesAnalyzer) convertObjectToSymbol(obj types.Object, pkg *packages.Package) *Symbol {
 	if obj == nil {
@@ -308,7 +383,7 @@ func (pa *PackagesAnalyzer) convertObjectToSymbol(obj types.Object, pkg *package
 	isStdLib := pa.isStandardLibraryImport(importPath)
 	
 	symbol := &Symbol{
-		Name:       obj.Name(),
+		Name:       pa.getQualifiedMethodName(obj), // Use qualified name for methods
 		Type:       pa.getObjectKind(obj),
 		File:       file,
 		Line:       pos.Line,
