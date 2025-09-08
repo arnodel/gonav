@@ -288,50 +288,7 @@ func (pa *PackagesAnalyzer) convertObjectToSymbol(obj types.Object, pkg *package
 				file = filepath.ToSlash(relPath)
 			} else {
 				// Different repository - extract relative path within target repository
-				// Two patterns to handle:
-				// 1. gonav-cache/isolated-env/gomodcache/github.com/module@version/file.go -> file.go
-				// 2. gonav-cache/github.com_module_version/file.go -> file.go  
-				if strings.Contains(filename, "gomodcache") && strings.Contains(filename, "@") {
-					// Pattern: .../gomodcache/github.com/module@version/subdir/file.go
-					parts := strings.Split(filename, "gomodcache/")
-					if len(parts) >= 2 {
-						// parts[1] would be like "github.com/module@version/subdir/file.go"
-						modCachePart := parts[1]
-						// Find the first slash after @version
-						atIndex := strings.Index(modCachePart, "@")
-						if atIndex > 0 {
-							// Find the next slash after the version
-							nextSlash := strings.Index(modCachePart[atIndex:], "/")
-							if nextSlash > 0 {
-								// Extract everything after the version slash
-								file = filepath.ToSlash(modCachePart[atIndex+nextSlash+1:])
-							} else {
-								// No subdirectory, just filename
-								file = filepath.Base(filename)
-							}
-						}
-					}
-				} else if strings.Contains(filename, "gonav-cache") {
-					// Fallback: Handle our custom cache format
-					parts := strings.Split(filename, "gonav-cache")
-					if len(parts) >= 2 {
-						cachePart := parts[1]
-						if len(cachePart) > 1 && cachePart[0] == '/' {
-							cachePart = cachePart[1:]
-						}
-						slashIndex := strings.Index(cachePart, "/")
-						if slashIndex > 0 && slashIndex < len(cachePart)-1 {
-							file = filepath.ToSlash(cachePart[slashIndex+1:])
-						} else {
-							file = filepath.Base(filename)
-						}
-					}
-				}
-				
-				// Fallback: if we couldn't extract from cache path, use basename
-				if file == "" {
-					file = filepath.Base(filename)
-				}
+				file = pa.extractRelativeFilePathFromCache(filename)
 			}
 		}
 	}
@@ -459,4 +416,54 @@ func readFileContent(filePath string) (string, error) {
 	}
 
 	return string(content), nil
+}
+
+// extractRelativeFilePathFromCache extracts the relative file path within 
+// a repository from cache paths like:
+// .../gomodcache/github.com/module@version/subdir/file.go -> subdir/file.go
+// .../gonav-cache/github.com_module_version/file.go -> file.go
+// Returns empty string for standard library paths (not in cache)
+func (pa *PackagesAnalyzer) extractRelativeFilePathFromCache(filename string) string {
+	// Two patterns to handle:
+	// 1. gonav-cache/isolated-env/gomodcache/github.com/module@version/file.go -> file.go
+	// 2. gonav-cache/github.com_module_version/file.go -> file.go  
+	if strings.Contains(filename, "gomodcache") && strings.Contains(filename, "@") {
+		// Pattern: .../gomodcache/github.com/module@version/subdir/file.go
+		parts := strings.Split(filename, "gomodcache/")
+		if len(parts) >= 2 {
+			// parts[1] would be like "github.com/module@version/subdir/file.go"
+			modCachePart := parts[1]
+			// Find the first slash after @version
+			atIndex := strings.Index(modCachePart, "@")
+			if atIndex > 0 {
+				// Find the next slash after the version
+				nextSlash := strings.Index(modCachePart[atIndex:], "/")
+				if nextSlash > 0 {
+					// Extract everything after the version slash
+					return filepath.ToSlash(modCachePart[atIndex+nextSlash+1:])
+				}
+			}
+		}
+	} else if strings.Contains(filename, "gonav-cache") {
+		// Fallback: Handle our custom cache format
+		parts := strings.Split(filename, "gonav-cache")
+		if len(parts) >= 2 {
+			cachePart := parts[1]
+			if len(cachePart) > 1 && cachePart[0] == '/' {
+				cachePart = cachePart[1:]
+			}
+			slashIndex := strings.Index(cachePart, "/")
+			if slashIndex > 0 && slashIndex < len(cachePart)-1 {
+				return filepath.ToSlash(cachePart[slashIndex+1:])
+			}
+		}
+	}
+	
+	// Fallback: if not from cache (e.g. standard library), return empty string
+	// This preserves the original behavior where external stdlib refs have empty files
+	// Exception: empty string should return "." (filepath.Base behavior)
+	if filename == "" {
+		return "."
+	}
+	return ""
 }
