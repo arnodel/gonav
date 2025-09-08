@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react'
 
 
-function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymbol, highlightLine = null }) {
+function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymbol, onDirectNavigateToExternal, highlightLine = null }) {
   const codeRef = useRef(null)
 
   // Scroll to highlighted line when it changes
@@ -51,7 +51,15 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
         
         console.log(`Cross-repository reference: ${reference.name} in ${moduleAtVersion}`)
         
-        // Extract package path from the import path
+        // If we have complete target information (file and line), use it directly
+        if (reference.target.file && reference.target.line > 0) {
+          console.log(`Using direct navigation: ${reference.target.file}:${reference.target.line}`)
+          // Call the navigation function with direct file/line info instead of symbol lookup
+          onDirectNavigateToExternal(moduleAtVersion, reference.target.file, reference.target.line, reference.name, reference.line)
+          return
+        }
+        
+        // Fallback: Extract package path and use symbol lookup (for cases without complete target info)
         let packagePath = ''
         if (modulePath.includes('/')) {
           const parts = modulePath.split('/')
@@ -60,7 +68,7 @@ function CodeViewer({ file, content, repository, onSymbolClick, onNavigateToSymb
           }
         }
         
-        console.log(`About to call onNavigateToSymbol with packagePath: '${packagePath}', symbol: '${reference.name}', moduleAtVersion: '${moduleAtVersion}'`)
+        console.log(`Fallback: About to call onNavigateToSymbol with packagePath: '${packagePath}', symbol: '${reference.name}', moduleAtVersion: '${moduleAtVersion}'`)
         onNavigateToSymbol(packagePath, reference.name, moduleAtVersion, reference.line)
         return
       }

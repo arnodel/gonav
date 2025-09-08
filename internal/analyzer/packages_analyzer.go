@@ -203,6 +203,9 @@ func (pa *PackagesAnalyzer) extractSymbolsFromPackage(pkg *packages.Package) []S
 		if symbol != nil {
 			symbols = append(symbols, *symbol)
 		}
+		
+		// Note: We intentionally do NOT extract methods here as they would cause
+		// key collisions in the symbols map (methods vs functions with same name)
 	}
 
 	return symbols
@@ -284,9 +287,51 @@ func (pa *PackagesAnalyzer) convertObjectToSymbol(obj types.Object, pkg *package
 				// Same repository, different package - use relative path
 				file = filepath.ToSlash(relPath)
 			} else {
-				// Different repository - don't include file path for cross-repo navigation
-				// The frontend should load the target repository separately
-				file = ""
+				// Different repository - extract relative path within target repository
+				// Two patterns to handle:
+				// 1. gonav-cache/isolated-env/gomodcache/github.com/module@version/file.go -> file.go
+				// 2. gonav-cache/github.com_module_version/file.go -> file.go  
+				if strings.Contains(filename, "gomodcache") && strings.Contains(filename, "@") {
+					// Pattern: .../gomodcache/github.com/module@version/subdir/file.go
+					parts := strings.Split(filename, "gomodcache/")
+					if len(parts) >= 2 {
+						// parts[1] would be like "github.com/module@version/subdir/file.go"
+						modCachePart := parts[1]
+						// Find the first slash after @version
+						atIndex := strings.Index(modCachePart, "@")
+						if atIndex > 0 {
+							// Find the next slash after the version
+							nextSlash := strings.Index(modCachePart[atIndex:], "/")
+							if nextSlash > 0 {
+								// Extract everything after the version slash
+								file = filepath.ToSlash(modCachePart[atIndex+nextSlash+1:])
+							} else {
+								// No subdirectory, just filename
+								file = filepath.Base(filename)
+							}
+						}
+					}
+				} else if strings.Contains(filename, "gonav-cache") {
+					// Fallback: Handle our custom cache format
+					parts := strings.Split(filename, "gonav-cache")
+					if len(parts) >= 2 {
+						cachePart := parts[1]
+						if len(cachePart) > 1 && cachePart[0] == '/' {
+							cachePart = cachePart[1:]
+						}
+						slashIndex := strings.Index(cachePart, "/")
+						if slashIndex > 0 && slashIndex < len(cachePart)-1 {
+							file = filepath.ToSlash(cachePart[slashIndex+1:])
+						} else {
+							file = filepath.Base(filename)
+						}
+					}
+				}
+				
+				// Fallback: if we couldn't extract from cache path, use basename
+				if file == "" {
+					file = filepath.Base(filename)
+				}
 			}
 		}
 	}

@@ -369,6 +369,48 @@ function App() {
     }
   }
 
+  // Direct navigation for external references with complete target info
+  const onDirectNavigateToExternal = async (moduleAtVersion, targetFile, targetLine, symbolName, clickLine = null) => {
+    console.log(`Direct external navigation to ${moduleAtVersion}/${targetFile}:${targetLine}`)
+    
+    try {
+      // Load external repository first
+      const loaded = await loadExternalRepository(moduleAtVersion)
+      if (!loaded) {
+        alert(`Failed to load external repository: ${moduleAtVersion}`)
+        return
+      }
+
+      // Switch to external repository
+      console.log(`Switching to external repository: ${moduleAtVersion}`)
+      
+      const response = await fetch(`http://localhost:8080/api/repo/${encodeURIComponent(moduleAtVersion)}`)
+      const repoData = await response.json()
+      
+      if (response.ok) {
+        const repo = {
+          ...repoData,
+          moduleAtVersion: moduleAtVersion
+        }
+        setRepository(repo)
+        setCurrentFile(null)
+        setFileContent(null)
+        setHighlightLine(null)
+        setPackages(new Map()) // Clear package cache for new repository
+        
+        // Navigate directly to the file and line
+        setTimeout(async () => {
+          await handleFileSelect(targetFile, targetLine, true, moduleAtVersion, symbolName, clickLine)
+        }, 100) // Small delay to ensure state updates
+      } else {
+        alert(`Failed to switch to external repository: ${repoData.error}`)
+      }
+    } catch (error) {
+      console.error('Error in direct external navigation:', error)
+      alert('Failed to navigate to external symbol')
+    }
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -410,6 +452,7 @@ function App() {
                 repository={repository}
                 onSymbolClick={handleFileSelect}
                 onNavigateToSymbol={navigateToSymbol}
+                onDirectNavigateToExternal={onDirectNavigateToExternal}
                 highlightLine={highlightLine}
               />
             </main>
