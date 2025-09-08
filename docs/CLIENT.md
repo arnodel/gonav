@@ -461,3 +461,66 @@ if (fileContent.definitions && fileContent.scopes) {
   handleLegacyNavigation(fileContent)
 }
 ```
+
+---
+
+## Progressive Enhancement Support
+
+The frontend now supports **revision-based progressive enhancement** for faster initial load times and continuously improving analysis quality.
+
+### Progressive Loading Pattern
+
+```javascript
+// App.jsx - Enhanced file loading with progressive enhancement
+async function loadFileWithEnhancement(filePath) {
+  // 1. Get immediate partial results
+  const response = await fetch(`/api/file/${moduleAtVersion}/${filePath}`)
+  const fileData = await response.json()
+  
+  // 2. Display partial results immediately
+  setSelectedFile({...fileData, filePath})
+  
+  // 3. Show enhancement indicator if incomplete
+  if (!fileData.complete) {
+    setEnhancementStatus('loading')
+    
+    // 4. Poll for improvements
+    const pollForEnhancement = async () => {
+      const enhanced = await fetch(`/api/file/${moduleAtVersion}/${filePath}?revision=${fileData.revision}`)
+      const enhancedData = await enhanced.json()
+      
+      if (!enhancedData.no_change) {
+        // Show improved results
+        setSelectedFile({...enhancedData, filePath})
+        setEnhancementStatus(enhancedData.complete ? 'complete' : 'partial')
+        
+        if (!enhancedData.complete) {
+          setTimeout(pollForEnhancement, 3000) // Continue polling
+        }
+      } else {
+        setTimeout(pollForEnhancement, 3000) // Retry later
+      }
+    }
+    
+    setTimeout(pollForEnhancement, 2000) // Start polling after 2s
+  }
+}
+```
+
+### UI Enhancement Indicators
+
+```javascript
+// Component to show progressive enhancement status
+function EnhancementStatus({ complete, onRefresh }) {
+  if (complete) return null
+  
+  return (
+    <div className="enhancement-banner">
+      <span>⏳ Analysis improving... Dependencies loading in background.</span>
+      <button onClick={onRefresh}>Check for improvements</button>
+    </div>
+  )
+}
+```
+
+For detailed implementation patterns and principles, see [PROGRESSIVE_ENHANCEMENT.md](PROGRESSIVE_ENHANCEMENT.md).

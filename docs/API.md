@@ -523,3 +523,118 @@ if (fileContent.definitions && fileContent.scopes) {
 - **Better UX**: Clear distinction between definitions and references  
 - **Enhanced navigation**: Precise local symbol resolution
 - **Future-ready**: Enables advanced features like variable shadowing detection
+
+---
+
+## Progressive Enhancement with Revision-Based Analysis
+
+### Overview
+
+Go Navigator now supports **progressive enhancement** through a revision-based system that provides immediate responses while continuously improving analysis quality as dependencies become available.
+
+### Revision-Based Enhancement Fields
+
+All analysis responses now include these additional fields:
+
+```json
+{
+  // ... existing response fields ...
+  
+  // NEW: Progressive enhancement fields
+  "revision": "abc123def456",  // Content-based analysis revision
+  "complete": true|false       // Whether analysis has all dependencies loaded
+}
+```
+
+### How Progressive Enhancement Works
+
+#### 1. Initial Request (Fast Response)
+```http
+GET /api/file/gin@v1.9.1/gin.go
+```
+
+**Response (immediate, ~50-150ms):**
+```json
+{
+  "source": "package gin...",
+  "symbols": {...},           // Partial analysis with available info
+  "references": [...],        // Local and stdlib references
+  "revision": "abc123",
+  "complete": false          // Missing external dependencies
+}
+```
+
+**What happens behind the scenes:**
+- Server performs immediate analysis with available dependencies
+- Generates content-based revision identifier
+- Triggers background loading of missing dependencies
+- Returns useful partial results immediately
+
+#### 2. Enhancement Requests
+```http
+GET /api/file/gin@v1.9.1/gin.go?revision=abc123
+```
+
+**Response when no improvement yet:**
+```json
+{
+  "revision": "abc123",
+  "complete": false,
+  "no_change": true
+}
+```
+
+**Response when analysis improved:**
+```json
+{
+  "source": "package gin...",
+  "symbols": {...},           // Enhanced with dependency info
+  "references": [...],        // More complete cross-references
+  "revision": "def456",       // NEW revision
+  "complete": true           // Now complete!
+}
+```
+
+#### 3. Complete Analysis
+Once `complete: true`, subsequent requests return immediately from cache with full analysis quality.
+
+### Client Implementation Pattern
+
+```javascript
+class ProgressiveGoNavClient {
+  async analyzeFileWithEnhancement(packagePath, filePath, onUpdate = null) {
+    // 1. Get initial analysis (fast)
+    let data = await this.analyzeFile(packagePath, filePath);
+    if (onUpdate) onUpdate(data);
+    
+    // 2. Poll for enhancements if incomplete
+    while (!data.complete) {
+      await sleep(2000); // Wait before polling
+      
+      const enhanced = await this.analyzeFile(packagePath, filePath, data.revision);
+      if (!enhanced.no_change) {
+        data = enhanced;
+        if (onUpdate) onUpdate(data); // Show improved results
+      }
+    }
+    
+    return data;
+  }
+}
+```
+
+### Benefits
+
+1. **Immediate Responsiveness**: Users see results in 50-150ms instead of waiting 10-30s
+2. **Progressive Quality**: Analysis automatically improves as dependencies load  
+3. **Efficient Caching**: Content-based revisions enable perfect caching
+4. **Graceful Degradation**: Partial analysis still provides significant value
+
+### Backward Compatibility
+
+The progressive enhancement is fully backward compatible:
+- Existing clients ignore the new `revision` and `complete` fields
+- New clients can implement progressive enhancement patterns
+- No breaking changes to existing response structures
+
+For detailed implementation examples, see [PROGRESSIVE_ENHANCEMENT.md](PROGRESSIVE_ENHANCEMENT.md).

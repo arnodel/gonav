@@ -14,8 +14,9 @@ import (
 
 // PackagesAnalyzer uses golang.org/x/tools/go/packages for robust package analysis
 type PackagesAnalyzer struct {
-	config     *packages.Config
-	moduleInfo *ModuleInfo // Module context for resolving external references
+	config           *packages.Config
+	moduleInfo       *ModuleInfo       // Module context for resolving external references
+	dependencyLoader *DependencyLoader // Optional dependency loader for progressive enhancement
 }
 
 // NewPackagesAnalyzer creates a new packages-based analyzer
